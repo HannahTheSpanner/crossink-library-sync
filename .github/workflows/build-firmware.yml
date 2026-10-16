@@ -16,8 +16,10 @@ on:
   release:
     types: [published]
 
+# Grouped by ref only: a release published in the web UI with a new tag fires
+# both a tag push and a release event, and the later run supersedes the first.
 concurrency:
-  group: build-${{ github.event_name }}-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -117,13 +119,21 @@ jobs:
     needs: [host-tests, firmware]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/release-body.md
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v7
         with:
           pattern: firmware-*
           merge-multiple: true
           path: dist
 
+      # A release created here from a pushed tag gets the standard notes; one
+      # published from the web UI keeps the notes written there.
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*.bin
+          body_path: ${{ github.event_name != 'release' && '.github/release-body.md' || '' }}
           generate_release_notes: ${{ github.event_name != 'release' }}
