@@ -16,7 +16,25 @@ enum class OpdsEntryType {
   BOOK         // Downloadable book
 };
 
-enum class OpdsParserError { NONE, NO_ENTRY_BUFFER, INVALID_INPUT, PARSER_MEMORY, BUFFER_MEMORY, XML_PARSE };
+enum class OpdsParserError {
+  NONE,
+  NO_ENTRY_BUFFER,
+  INVALID_INPUT,
+  PARSER_MEMORY,
+  BUFFER_MEMORY,
+  XML_PARSE,
+  SINK_ABORTED
+};
+
+struct OpdsEntry;
+
+/**
+ * Receives each completed entry when the parser runs in streaming mode.
+ * The entry is owned by the parser and is reset after the call, so the sink
+ * may move strings out of it. Return false to stop parsing (the parser then
+ * reports SINK_ABORTED).
+ */
+using OpdsEntrySink = bool (*)(void* context, OpdsEntry& entry);
 
 /**
  * Represents an entry from an OPDS feed (either a navigation link or a book).
@@ -133,6 +151,11 @@ class OpdsParser final : public Print {
   OpdsParser(OpdsEntry* entries, size_t entryCapacity);
   template <size_t N>
   explicit OpdsParser(OpdsEntry (&entries)[N]) : OpdsParser(entries, N) {}
+  /**
+   * Streaming mode: every completed entry is handed to `sink` instead of being
+   * stored, so a feed page of any length is parsed with constant memory.
+   */
+  OpdsParser(OpdsEntrySink sink, void* sinkContext);
   ~OpdsParser();
 
   // Disable copy
@@ -162,6 +185,10 @@ class OpdsParser final : public Print {
   OpdsEntryView getEntries() const { return OpdsEntryView(entries, entryCount); }
   OpdsBookView getBooks() const { return OpdsBookView(entries, entryCount); }
   bool wasTruncated() const { return truncated; }
+  // Every closed <entry> element, including ones dropped for lacking a title
+  // or a usable link (for example PDF-only books). Lets a caller report how
+  // much of a catalogue it could not use.
+  size_t getEntriesSeen() const { return entriesSeen; }
 
   /**
    * Clear all parsed entries.
@@ -187,6 +214,10 @@ class OpdsParser final : public Print {
   OpdsEntry* entries = nullptr;
   size_t entryCapacity = 0;
   size_t entryCount = 0;
+  size_t entriesSeen = 0;
+  OpdsEntrySink sink = nullptr;
+  void* sinkContext = nullptr;
+  bool sinkStopped = false;
   OpdsEntry currentEntry;
   std::string currentText;
 

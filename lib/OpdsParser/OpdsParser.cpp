@@ -72,6 +72,16 @@ OpdsParser::OpdsParser(OpdsEntry* entries, const size_t entryCapacity)
   resetXmlParser();
 }
 
+OpdsParser::OpdsParser(const OpdsEntrySink sink, void* sinkContext) : sink(sink), sinkContext(sinkContext) {
+  if (!sink) {
+    errorOccured = true;
+    errorReason = OpdsParserError::NO_ENTRY_BUFFER;
+    LOG_DBG("OPDS", "No entry sink supplied");
+  }
+
+  resetXmlParser();
+}
+
 OpdsParser::~OpdsParser() { destroyXmlParser(parser); }
 
 size_t OpdsParser::write(uint8_t c) { return write(&c, 1); }
@@ -107,9 +117,13 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
 
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), 0) == XML_STATUS_ERROR) {
       errorOccured = true;
-      errorReason = OpdsParserError::XML_PARSE;
-      LOG_DBG("OPDS", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
-              XML_ErrorString(XML_GetErrorCode(parser)));
+      // A sink that stopped the parse surfaces as XML_ERROR_ABORTED; keep its
+      // more specific reason.
+      if (errorReason != OpdsParserError::SINK_ABORTED) {
+        errorReason = OpdsParserError::XML_PARSE;
+        LOG_DBG("OPDS", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
+                XML_ErrorString(XML_GetErrorCode(parser)));
+      }
       destroyXmlParser(parser);
       parser = nullptr;
       return length;
@@ -124,7 +138,7 @@ void OpdsParser::flush() {
   if (!parser) return;
   if (XML_Parse(parser, nullptr, 0, XML_TRUE) != XML_STATUS_OK) {
     errorOccured = true;
-    errorReason = OpdsParserError::XML_PARSE;
+    if (errorReason != OpdsParserError::SINK_ABORTED) errorReason = OpdsParserError::XML_PARSE;
     destroyXmlParser(parser);
     parser = nullptr;
   }
@@ -149,6 +163,8 @@ bool OpdsParser::error() const { return errorOccured; }
 
 void OpdsParser::clear() {
   entryCount = 0;
+  entriesSeen = 0;
+  sinkStopped = false;
   truncated = false;
   searchTemplate.clear();
   nextPageUrl.clear();
@@ -156,7 +172,7 @@ void OpdsParser::clear() {
   currentEntry = OpdsEntry{};
   currentText.clear();
   inEntry = inTitle = inAuthor = inAuthorName = inId = inSummary = false;
-  errorOccured = !entries || entryCapacity == 0;
+  errorOccured = !sink && (!entries || entryCapacity == 0);
   errorReason = errorOccured ? OpdsParserError::NO_ENTRY_BUFFER : OpdsParserError::NONE;
   resetXmlParser();
 }
@@ -285,9 +301,20 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<OpdsParser*>(userData);
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
+    ++self->entriesSeen;
     if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
       if (self->currentEntry.type != OpdsEntryType::NAVIGATION) self->currentEntry.count = -1;
-      if (self->entryCount < self->entryCapacity) {
+      if (self->sink) {
+        if (!self->sinkStopped && !self->sink(self->sinkContext, self->currentEntry)) {
+          // Expat may still deliver buffered callbacks after a stop request;
+          // sinkStopped keeps them from reaching the sink.
+          self->sinkStopped = true;
+          self->errorOccured = true;
+          self->errorReason = OpdsParserError::SINK_ABORTED;
+          XML_StopParser(self->parser, XML_FALSE);
+        }
+        self->currentEntry = OpdsEntry{};
+      } else if (self->entryCount < self->entryCapacity) {
         self->entries[self->entryCount++] = std::move(self->currentEntry);
       } else {
         self->truncated = true;

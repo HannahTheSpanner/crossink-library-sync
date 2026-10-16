@@ -42,14 +42,29 @@ class OpdsBookBrowserActivity final : public Activity {
   BrowserState state = BrowserState::LOADING;
   ScreenTransitionRefresh screenTransitionRefresh;
   std::unique_ptr<OpdsEntry[]> entries;
-  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 2;
+  // Parsed entries plus the synthetic sync, previous-page and next-page rows.
+  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 3;
   // 832 bytes owned by this activity; reused each render rather than allocated on the task stack.
   std::array<std::array<char, 16>, OPDS_BROWSER_ENTRY_CAPACITY> countLabels{};
   size_t entryCount = 0;
   bool hasPrevPageRow = false;
   bool hasNextPageRow = false;
-  std::vector<std::string> navigationHistory;
+  // Row 0 can be "Sync missing books": bulk-download what syncFeedUrl lists
+  // and the card lacks (OpdsLibrarySyncActivity).
+  bool hasSyncRow = false;
+  std::string syncFeedUrl;
+  std::string syncFeedTitle;
+  // A catalogue's first page and title. Pagination keeps them, so a sync
+  // started from page 3 still walks the whole catalogue.
+  struct HistoryEntry {
+    std::string path;
+    std::string feedRoot;
+    std::string feedTitle;
+  };
+  std::vector<HistoryEntry> navigationHistory;
   std::string currentPath;
+  std::string feedRootPath;
+  std::string feedTitle;
   std::string searchTemplate;
   int selectorIndex = 0;
   std::string errorMessage;
@@ -95,6 +110,8 @@ class OpdsBookBrowserActivity final : public Activity {
   bool appendEntry(OpdsEntry&& entry);
   void navigateToEntry(const OpdsEntry& entry, bool pageLink);
   void navigateBack();
+  void addSyncRow(const std::string& pageUrl);
+  void launchLibrarySync();
   void requestDownload(const OpdsEntry& book);
   void downloadBook(const OpdsEntry& book, const std::string& filename);
   void launchSearch();

@@ -1,3 +1,5 @@
+> **crossink-library-sync** is a fork of [uxjulia/crossink](https://github.com/uxjulia/crossink) v1.6.1 that adds **OPDS library sync**: download every book in an OPDS catalog that is not already on the device, in one go, ported from KOReader's [Library Sync plugin](https://github.com/komadorirobin/library-sync.koplugin). See [Syncing missing books](./docs/user-guide.md#syncing-missing-books). Firmware for the X3/X4 (`firmware-x3-x4.bin`), X4 Classic (`firmware-x4-classic.bin`) and X4 Pro (`firmware-x4-pro.bin`) is built by the **Build firmware** workflow on every push.
+
 > **This is a personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)** with a focus on improved fonts and minimal reading stats.
 
 ### Supported Devices

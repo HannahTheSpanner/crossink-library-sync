@@ -497,6 +497,21 @@ You can also manage OPDS servers from the web interface while in File Transfer m
 
 For web-based Wi-Fi network management, see [File Transfer](./webserver.md).
 
+##### Syncing missing books
+
+The OPDS browser can download every book in a catalog that is not already on the device, in one go. This mirrors the "Sync missing books" action of KOReader's [Library Sync plugin](https://github.com/komadorirobin/library-sync.koplugin).
+
+- On a server's top level, **Sync missing books** appears as the first row when the catalog has an "All Books" (or "Catalog") entry, and syncs that whole catalog. Grimmory and BookOrbit both provide one.
+- Inside any catalog that lists books (a shelf, a series, a search result), the first row syncs that catalog instead. All of its pages are checked, even if you are viewing a later page.
+
+A sync runs in three steps:
+
+1. **Check this device.** The card is scanned for EPUB files. A catalog book counts as already present when a local file carries any name a downloader would give it (`Author - Title`, `Title - Author`, `Last, First - Title`, `Title, The - Author`, the bare title, or the server's own file name), compared without regard to case, accents or punctuation. Books the Library index knows by EPUB title and author also count, as do books an earlier sync downloaded from the same server, even if they were renamed on the server since.
+2. **Check the catalog.** Every page of the catalog is fetched. If any page cannot be read after three attempts, the sync stops before downloading anything. Entries without an EPUB link (for example PDF-only books) are counted and skipped.
+3. **Download.** After you confirm the count, missing books are saved to the OPDS download folder with the server's naming format. One failed book does not stop the rest; the sync stops early only if you cancel or the SD card is full.
+
+Nothing is ever replaced or deleted. Deleting a synced book from the device means the next sync downloads it again.
+
 #### 3.6.6 Web Settings (Wi-Fi + OPDS)
 
 While in **File Transfer** mode, the web settings page includes management cards for both **Wi-Fi Networks** and **OPDS Servers**.

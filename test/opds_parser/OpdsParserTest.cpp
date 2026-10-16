@@ -1,6 +1,10 @@
 #include <OpdsParser.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 namespace {
 
 constexpr char kMultiAuthorFeed[] = R"(<?xml version="1.0" encoding="UTF-8"?>
@@ -144,4 +148,94 @@ TEST(OpdsParserTest, CountBoundsAndUnrelatedSummaries) {
     ASSERT_TRUE(parser.parse(emptyFeed, sizeof(emptyFeed) - 1));
     EXPECT_EQ(entries[0].count, -1);
   }
+}
+
+namespace {
+
+struct SinkLog {
+  std::vector<OpdsEntry> entries;
+  size_t stopAfter = 0;  // 0 = never stop
+};
+
+bool collectEntry(void* context, OpdsEntry& entry) {
+  auto* log = static_cast<SinkLog*>(context);
+  log->entries.push_back(std::move(entry));
+  return log->stopAfter == 0 || log->entries.size() < log->stopAfter;
+}
+
+std::string bookFeed(const size_t books, const bool withNext) {
+  std::string feed =
+      "<?xml version='1.0'?><feed xmlns='http://www.w3.org/2005/Atom' "
+      "xmlns:opensearch='http://a9.com/-/spec/opensearch/1.1/'>";
+  if (withNext) feed += "<link rel='next' href='/api/v1/opds/catalog?page=2' type='application/atom+xml'/>";
+  for (size_t i = 0; i < books; ++i) {
+    const std::string n = std::to_string(i);
+    feed += "<entry><title>Book " + n + "</title><id>urn:booklore:book:" + n + "</id><author><name>Author " + n +
+            "</name></author><link href='/api/v1/opds/" + n +
+            "/download' rel='http://opds-spec.org/acquisition' type='application/epub+zip'/></entry>";
+  }
+  // A PDF-only book: no EPUB acquisition link, so it is seen but not delivered.
+  feed +=
+      "<entry><title>Scan</title><id>urn:booklore:book:pdf</id><link href='/api/v1/opds/pdf/download' "
+      "rel='http://opds-spec.org/acquisition' type='application/pdf'/></entry>";
+  feed += "</feed>";
+  return feed;
+}
+
+}  // namespace
+
+TEST(OpdsParserTest, SinkModeStreamsPagesLargerThanTheEntryBuffer) {
+  // A real "All books" page can exceed MAX_OPDS_FEED_ENTRIES; the sink must see every one.
+  const std::string feed = bookFeed(MAX_OPDS_FEED_ENTRIES * 3, true);
+  SinkLog log;
+  OpdsParser parser(&collectEntry, &log);
+  // Feed it in uneven network-sized chunks.
+  for (size_t pos = 0; pos < feed.size(); pos += 700) {
+    const size_t len = std::min<size_t>(700, feed.size() - pos);
+    parser.write(reinterpret_cast<const uint8_t*>(feed.data() + pos), len);
+  }
+  parser.flush();
+
+  ASSERT_FALSE(parser.error());
+  ASSERT_EQ(log.entries.size(), MAX_OPDS_FEED_ENTRIES * 3);
+  EXPECT_EQ(parser.getEntryCount(), 0u);
+  EXPECT_EQ(parser.getEntriesSeen(), MAX_OPDS_FEED_ENTRIES * 3 + 1);
+  EXPECT_FALSE(parser.wasTruncated());
+  EXPECT_EQ(parser.getNextPageUrl(), "/api/v1/opds/catalog?page=2");
+  EXPECT_EQ(log.entries[0].type, OpdsEntryType::BOOK);
+  EXPECT_EQ(log.entries[0].title, "Book 0");
+  EXPECT_EQ(log.entries[0].author, "Author 0");
+  EXPECT_EQ(log.entries[0].id, "urn:booklore:book:0");
+  EXPECT_EQ(log.entries[149].href, "/api/v1/opds/149/download");
+}
+
+TEST(OpdsParserTest, SinkCanStopTheParse) {
+  const std::string feed = bookFeed(10, false);
+  SinkLog log;
+  log.stopAfter = 3;
+  OpdsParser parser(&collectEntry, &log);
+  parser.write(reinterpret_cast<const uint8_t*>(feed.data()), feed.size());
+  parser.flush();
+
+  EXPECT_TRUE(parser.error());
+  EXPECT_EQ(parser.getErrorReason(), OpdsParserError::SINK_ABORTED);
+  EXPECT_EQ(log.entries.size(), 3u);
+}
+
+TEST(OpdsParserTest, SinkModeParserIsReusableAfterClear) {
+  SinkLog log;
+  OpdsParser parser(&collectEntry, &log);
+  const std::string first = bookFeed(2, true);
+  ASSERT_TRUE(parser.parse(first.data(), first.size()));
+  EXPECT_EQ(parser.getEntriesSeen(), 3u);
+  const std::string second = bookFeed(1, false);
+  ASSERT_TRUE(parser.parse(second.data(), second.size()));
+  EXPECT_EQ(parser.getEntriesSeen(), 2u);
+  EXPECT_TRUE(parser.getNextPageUrl().empty());
+  EXPECT_EQ(log.entries.size(), 3u);
+}
+
+TEST(OpdsParserTest, NullSinkIsAnError) {
+  OpdsParser parser(static_cast<OpdsEntrySink>(nullptr), nullptr);
+  EXPECT_TRUE(parser.error());
 }

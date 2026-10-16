@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- Sync missing books from an OPDS catalog: the OPDS browser can check a whole catalog (or the server's "All Books" catalog) against the books on the device and download every EPUB that is missing, ported from KOReader's Library Sync plugin. Books already on the device are recognized by file name, Library metadata, or an earlier sync, and nothing is replaced or deleted.
+
 ## [v1.6.1] - 2026-10-03
 
 ### Added

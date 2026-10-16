@@ -8,6 +8,7 @@
 #include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <OpdsLibraryMatch.h>
 #include <OpdsStream.h>
 #include <WiFi.h>
 #include <ZipFile.h>
@@ -17,6 +18,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "OpdsLibrarySyncActivity.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -45,11 +47,19 @@ constexpr fui::ActionId ACTION_CANCEL = 3;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
 
+// Shared with library sync so both name a download identically.
 std::string buildBookFilenameBase(const OpdsEntry& book, const OpdsFilenameFormat format) {
-  if (book.author.empty()) return book.title;
-  if (book.title.empty()) return book.author;
-  if (format == OpdsFilenameFormat::TITLE_AUTHOR) return book.title + " - " + book.author;
-  return book.author + " - " + book.title;
+  return opds_sync::bookFilenameBase(book.title, book.author, format == OpdsFilenameFormat::TITLE_AUTHOR);
+}
+
+// library-sync's rule for the catalogue that holds every book: an entry titled
+// like "All Books" or "Catalog(ue)". Grimmory and BookOrbit both publish one.
+bool isAllBooksEntry(const OpdsEntry& entry) {
+  if (entry.type != OpdsEntryType::NAVIGATION) return false;
+  std::string lower;
+  lower.reserve(entry.title.size());
+  for (const char c : entry.title) lower.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+  return lower.find("all books") != std::string::npos || lower.find("catalog") != std::string::npos;
 }
 
 // Mayberry prefixes folder titles with U+1F4C1 (file folder), which the UI
@@ -83,6 +93,8 @@ void OpdsBookBrowserActivity::onEnter() {
   navigationHistory.clear();
   searchTemplate = "";
   currentPath = "";
+  feedRootPath = "";
+  feedTitle = server.name.empty() ? tr(STR_OPDS_BROWSER) : server.name;
   selectorIndex = 0;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
@@ -131,13 +143,18 @@ void OpdsBookBrowserActivity::onExit() {
 
 void OpdsBookBrowserActivity::activateSelected() {
   if (!entries || entryCount == 0 || selectorIndex < 0 || selectorIndex >= static_cast<int>(entryCount)) return;
+  if (hasSyncRow && selectorIndex == 0) {
+    launchLibrarySync();
+    return;
+  }
   const auto& entry = entries[selectorIndex];
   if (entry.type == OpdsEntryType::BOOK) {
     requestDownload(entry);
     return;
   }
-  const bool pageLink =
-      (hasPrevPageRow && selectorIndex == 0) || (hasNextPageRow && selectorIndex == static_cast<int>(entryCount) - 1);
+  const int prevRowIndex = hasSyncRow ? 1 : 0;
+  const bool pageLink = (hasPrevPageRow && selectorIndex == prevRowIndex) ||
+                        (hasNextPageRow && selectorIndex == static_cast<int>(entryCount) - 1);
   navigateToEntry(entry, pageLink);
 }
 
@@ -371,8 +388,12 @@ void OpdsBookBrowserActivity::buildBrowsingScreen(UiApp::ScreenType& screen) {
     const auto& entry = entries[i];
     fui::ListItem item;
     item.label = entry.title.c_str();
-    if (entry.type == OpdsEntryType::BOOK && !entry.author.empty()) item.subtitle = entry.author.c_str();
-    if (entry.type == OpdsEntryType::NAVIGATION) {
+    if (hasSyncRow && i == 0) {
+      item.subtitle = tr(STR_OPDS_SYNC_MISSING_HINT);
+    } else if (entry.type == OpdsEntryType::BOOK && !entry.author.empty()) {
+      item.subtitle = entry.author.c_str();
+    }
+    if (entry.type == OpdsEntryType::NAVIGATION && !(hasSyncRow && i == 0)) {
       item.value = ">";
       if (entry.count >= 0) {
         snprintf(countLabels[i].data(), countLabels[i].size(), "(%ld) >", static_cast<long>(entry.count));
@@ -460,8 +481,10 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   MappedInputManager::Labels labels;
   switch (state) {
     case BrowserState::BROWSING: {
-      const char* confirmLabel =
-          (entryCount > 0 && entries[selectorIndex].type == OpdsEntryType::BOOK) ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
+      const char* confirmLabel = (hasSyncRow && selectorIndex == 0) ? tr(STR_OPDS_SYNC)
+                                 : (entryCount > 0 && entries[selectorIndex].type == OpdsEntryType::BOOK)
+                                     ? tr(STR_DOWNLOAD)
+                                     : tr(STR_OPEN);
       const char* searchLabel = (!searchTemplate.empty() && selectorIndex == 0) ? tr(STR_SEARCH) : tr(STR_DIR_UP);
       labels =
           mappedInput.mapLabels(mappedInput.withBackArrow(tr(STR_BACK)), confirmLabel, searchLabel, tr(STR_DIR_DOWN));
@@ -519,6 +542,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
     appendEntry(OpdsEntry{OpdsEntryType::BOOK, "Kindred", "Octavia E. Butler", "/books/kindred.epub", ""});
     appendEntry(OpdsEntry{OpdsEntryType::BOOK, "The Time Machine", "H. G. Wells", "/books/the-time-machine.epub", ""});
   }
+  addSyncRow(UrlUtils::buildUrl(server.url, path));
 
   selectorIndex = 0;
   topIndex = 0;
@@ -592,6 +616,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
         std::string(mappedInput.resolveLabel(mappedInput.withNextPageArrow(tr(STR_NEXT_PAGE)))), "", nextUrl, ""});
     if (!hasNextPageRow) LOG_DBG("OPDS", "No room for next-page entry");
   }
+  addSyncRow(url);
 
   selectorIndex = 0;
   topIndex = 0;
@@ -616,6 +641,7 @@ void OpdsBookBrowserActivity::clearEntries() {
   entryCount = 0;
   hasPrevPageRow = false;
   hasNextPageRow = false;
+  hasSyncRow = false;
 }
 
 bool OpdsBookBrowserActivity::appendEntry(OpdsEntry&& entry) {
@@ -626,10 +652,14 @@ bool OpdsBookBrowserActivity::appendEntry(OpdsEntry&& entry) {
 
 void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry, const bool pageLink) {
   // Pagination stays in the same catalog; Back should return to its parent.
-  if (!pageLink) navigationHistory.push_back(currentPath);
+  if (!pageLink) navigationHistory.push_back(HistoryEntry{currentPath, feedRootPath, feedTitle});
   // Resolve to a full URL so sub-sub-navigation retains parent path context
   const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
   currentPath = UrlUtils::buildUrl(feedUrl, entry.href);
+  if (!pageLink) {
+    feedRootPath = currentPath;
+    feedTitle = entry.title;
+  }
 
   clearEntries();
   selectorIndex = 0;
@@ -641,13 +671,64 @@ void OpdsBookBrowserActivity::navigateBack() {
   if (navigationHistory.empty()) {
     onGoHome();
   } else {
-    currentPath = navigationHistory.back();
+    HistoryEntry previous = std::move(navigationHistory.back());
     navigationHistory.pop_back();
+    currentPath = std::move(previous.path);
+    feedRootPath = std::move(previous.feedRoot);
+    feedTitle = std::move(previous.feedTitle);
     clearEntries();
     selectorIndex = 0;
     showLoadingBeforeFetch();
     fetchFeed(currentPath);
   }
+}
+
+// Offers "Sync missing books" as the first row when the feed has a catalogue
+// to sync: the feed itself when it lists books (from its first page), or the
+// root's "All Books" entry when it only lists sub-catalogues.
+void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
+  hasSyncRow = false;
+  if (!entries || entryCount == 0 || entryCount >= OPDS_BROWSER_ENTRY_CAPACITY) return;
+
+  const OpdsEntry* allBooks = nullptr;
+  bool hasBooks = false;
+  for (size_t i = 0; i < entryCount; ++i) {
+    if (entries[i].type == OpdsEntryType::BOOK) {
+      hasBooks = true;
+      break;
+    }
+    if (!allBooks && isAllBooksEntry(entries[i])) allBooks = &entries[i];
+  }
+  if (hasBooks) {
+    syncFeedUrl = UrlUtils::buildUrl(server.url, feedRootPath);
+    syncFeedTitle = feedTitle;
+  } else if (allBooks) {
+    syncFeedUrl = UrlUtils::buildUrl(pageUrl, allBooks->href);
+    syncFeedTitle = allBooks->title;
+  } else {
+    return;
+  }
+
+  for (size_t i = entryCount; i > 0; --i) {
+    entries[i] = std::move(entries[i - 1]);
+  }
+  entries[0] = OpdsEntry{OpdsEntryType::NAVIGATION, tr(STR_OPDS_SYNC_MISSING), "", syncFeedUrl, ""};
+  entryCount++;
+  hasSyncRow = true;
+}
+
+void OpdsBookBrowserActivity::launchLibrarySync() {
+  if (syncFeedUrl.empty()) return;
+  auto sync = makeUniqueNoThrow<OpdsLibrarySyncActivity>(renderer, mappedInput, server, syncFeedUrl, syncFeedTitle);
+  if (!sync) {
+    LOG_ERR("OPDS", "Cannot allocate library sync");
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_MEMORY_ERROR);
+    requestUpdate();
+    return;
+  }
+  // The rows keep their indices; the sync screen returns to this same list.
+  startActivityForResult(std::move(sync), [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void OpdsBookBrowserActivity::requestDownload(const OpdsEntry& book) {
@@ -828,8 +909,10 @@ void OpdsBookBrowserActivity::performSearch(const std::string& query) {
   const size_t pos = url.find(placeholder);
   if (pos != std::string::npos) url.replace(pos, placeholder.length(), urlEncode(query));
 
-  navigationHistory.push_back(currentPath);
+  navigationHistory.push_back(HistoryEntry{currentPath, feedRootPath, feedTitle});
   currentPath = url;
+  feedRootPath = url;
+  feedTitle = query;
 
   clearEntries();
   selectorIndex = 0;
