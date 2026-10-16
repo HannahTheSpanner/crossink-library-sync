@@ -12,9 +12,12 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Publishing a release from the GitHub web UI also builds and attaches the images.
+  release:
+    types: [published]
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -123,4 +126,4 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*.bin
-          generate_release_notes: true
+          generate_release_notes: ${{ github.event_name != 'release' }}
