@@ -9,8 +9,10 @@
 #include <Memory.h>
 #include <ZipFile.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -42,9 +44,8 @@ constexpr uint64_t ORDINAL_MASK = 0xFFFFULL;
 
 // Tabs and newlines delimit queue records; nothing else is reserved.
 void appendField(std::string& out, const std::string& value) {
-  for (const char c : value) {
-    out.push_back((c == '\t' || c == '\n' || c == '\r') ? ' ' : c);
-  }
+  std::transform(value.begin(), value.end(), std::back_inserter(out),
+                 [](const char c) { return (c == '\t' || c == '\n' || c == '\r') ? ' ' : c; });
 }
 
 void formatKey(const uint64_t key, char (&out)[17]) {

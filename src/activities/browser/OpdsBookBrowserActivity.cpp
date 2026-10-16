@@ -13,7 +13,9 @@
 #include <WiFi.h>
 #include <ZipFile.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <iterator>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -58,7 +60,8 @@ bool isAllBooksEntry(const OpdsEntry& entry) {
   if (entry.type != OpdsEntryType::NAVIGATION) return false;
   std::string lower;
   lower.reserve(entry.title.size());
-  for (const char c : entry.title) lower.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+  std::transform(entry.title.begin(), entry.title.end(), std::back_inserter(lower),
+                 [](const char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; });
   return lower.find("all books") != std::string::npos || lower.find("catalog") != std::string::npos;
 }
 

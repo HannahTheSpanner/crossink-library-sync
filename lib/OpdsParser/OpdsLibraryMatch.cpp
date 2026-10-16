@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 namespace opds_sync {
 
@@ -85,9 +86,9 @@ const char* foldCodepoint(const uint32_t cp) {
     return base ? base : "";
   }
   if (cp >= 0x0100 && cp <= 0x017F) {
-    for (const auto& run : LATIN_EXT_A_FOLD) {
-      if (cp >= run.first && cp <= run.last) return run.base;
-    }
+    const auto* run = std::find_if(std::begin(LATIN_EXT_A_FOLD), std::end(LATIN_EXT_A_FOLD),
+                                   [cp](const FoldRun& r) { return cp >= r.first && cp <= r.last; });
+    if (run != std::end(LATIN_EXT_A_FOLD)) return run->base;
   }
   // Latin-1 punctuation and symbols (NBSP, guillemets, inverted marks),
   // General Punctuation (curly quotes, dashes, ellipsis, thin spaces) and
