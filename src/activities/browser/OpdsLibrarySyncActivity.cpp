@@ -845,6 +845,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
   options.authorizationOrigin = authorizationOrigin;
   options.stageAsPart = true;
   options.checkFreeSpace = true;
+  options.freeSpaceEstimate = &freeSpaceEstimate;
   options.validate = &validateEpub;
 
   int lastRenderedPercent = -1;

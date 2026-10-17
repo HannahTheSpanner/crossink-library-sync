@@ -10,6 +10,7 @@
 - Retry after a failed OPDS download retries that download instead of reloading the catalog page, and Back returns to the book list.
 - OPDS catalog pages and downloads retry brief connection failures automatically, and OPDS errors show the server's HTTP status (for example "HTTP 401" for a rejected login).
 - Sync missing books no longer runs out of memory on the X3 and X4. It failed with "Failed to fetch feed" on the first catalog page, or stopped at "Page 0" when started from a book list. The browser now frees the page it was showing while the sync runs (and reloads it afterwards), the catalog parser no longer needs a 4 KB block partway through a page, and a page that runs out of memory is retried and reported as "Memory error".
+- Sync missing books no longer stalls before each book on large FAT32 cards (most noticeable on the X4 Pro). Every download counted the card's free space, which reads the whole allocation table, and did so after the server had started sending the book; on a 32 GB card that held each download up and could make the server drop the connection. Free space is now counted before the request, and a sync counts it once and keeps a running estimate.
 
 ## [v1.6.1] - 2026-10-03
 

@@ -117,6 +117,10 @@ class OpdsLibrarySyncActivity final : public Activity {
   size_t downloaded = 0;
   size_t failed = 0;
   size_t alreadyPresent = 0;
+  // Free SD space, counted for the first book and then estimated, so the
+  // slow free-cluster count does not run before every book (see
+  // HttpDownloader::DownloadOptions::freeSpaceEstimate).
+  uint64_t freeSpaceEstimate = 0;
 
   static void rootScreen(UiApp::ScreenType& screen, void* user);
   static void onConfirmEvent(const freeink::ui::ActionEvent& event, void* user);
