@@ -91,6 +91,9 @@ class OpdsBookBrowserActivity final : public Activity {
   // download and Back returns to the still-loaded list. Null for feed errors.
   std::unique_ptr<OpdsEntry> retryDownload;
   std::string retryDownloadPath;
+  // Set when the library sync screen closes: launchLibrarySync() freed the
+  // page to give the sync more memory, and loop() fetches it again.
+  bool reloadAfterSync = false;
 
   // Single screen fn dispatching on `state`: every state shares the themed
   // header and gets built through FreeInkUI.

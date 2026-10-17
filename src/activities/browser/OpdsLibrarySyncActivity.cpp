@@ -622,9 +622,14 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   std::string pageNext;
   size_t pageSeen = 0;
   bool pageOk = false;
+  bool outOfMemory = false;
   int responseStatus = 0;
   for (int attempt = 1; attempt <= PAGE_ATTEMPTS && !pageOk; ++attempt) {
     if (attempt > 1) delay(RETRY_BACKOFF_MS * (attempt - 1));
+    // Each page opens a fresh HTTPS connection; on X3/X4 the largest free
+    // block decides whether it and the parser fit.
+    LOG_INF(LOG_TAG, "Page %u attempt %d: heap free=%u largest=%u", static_cast<unsigned>(pagesFetched + 1), attempt,
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
     pageBooks = pageMissing = 0;
     pageWriteFailed = false;
     pageFile = Storage.open(PAGE_PATH, O_WRONLY | O_CREAT | O_TRUNC);
@@ -675,11 +680,16 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       pageNext = parser.getNextPageUrl();
       pageSeen = parser.getEntriesSeen();
     } else {
-      LOG_ERR(LOG_TAG, "Page %u attempt %d failed (http %d, status %d, parse %d)",
+      const OpdsParserError reason = parser.getErrorReason();
+      outOfMemory = reason == OpdsParserError::BUFFER_MEMORY || reason == OpdsParserError::PARSER_MEMORY;
+      LOG_ERR(LOG_TAG, "Page %u attempt %d failed (http %d, status %d, parse %d, heap free=%u largest=%u)",
               static_cast<unsigned>(pagesFetched + 1), attempt, static_cast<int>(result), responseStatus,
-              static_cast<int>(parser.getErrorReason()));
-      // A rejected login or a missing page will not change on retry.
-      if (result != HttpDownloader::OK && !HttpDownloader::isRetryable(result, responseStatus)) break;
+              static_cast<int>(reason), static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      // A rejected login or a missing page will not change on retry. A parser
+      // that ran out of memory may fit once this attempt's connection and
+      // buffers are gone, so it is retried like a network failure.
+      if (result != HttpDownloader::OK && !outOfMemory && !HttpDownloader::isRetryable(result, responseStatus)) break;
     }
   }
 
@@ -687,8 +697,12 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     // library-sync stops before downloading anything when the catalogue
     // cannot be read completely; partial results would look like a full sync.
     char message[96];
-    snprintf(message, sizeof(message), responseStatus > 0 && responseStatus != 200 ? "%s (HTTP %d)" : "%s",
-             tr(STR_FETCH_FEED_FAILED), responseStatus);
+    if (outOfMemory) {
+      snprintf(message, sizeof(message), "%s", tr(STR_MEMORY_ERROR));
+    } else {
+      snprintf(message, sizeof(message), responseStatus > 0 && responseStatus != 200 ? "%s (HTTP %d)" : "%s",
+               tr(STR_FETCH_FEED_FAILED), responseStatus);
+    }
     fail(message);
     return;
   }

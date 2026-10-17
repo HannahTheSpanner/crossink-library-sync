@@ -365,7 +365,8 @@ void KeySet::clear() {
 bool KeySet::add(const uint64_t key) {
   if (key == 0) return true;
   if (count == capacity) {
-    const size_t nextCapacity = capacity == 0 ? 256 : capacity * 2;
+    // Small start: on X3/X4 every spare KB counts once WiFi and TLS are up.
+    const size_t nextCapacity = capacity == 0 ? 32 : capacity * 2;
     // realloc keeps the old block on failure, so a refused growth leaves the
     // set intact and the caller decides how to report it.
     auto* grown = static_cast<uint64_t*>(realloc(data, nextCapacity * sizeof(uint64_t)));
@@ -383,6 +384,19 @@ void KeySet::seal() {
   std::sort(data, data + count);
   count = static_cast<size_t>(std::unique(data, data + count) - data);
   sealed = true;
+  // Doubling leaves up to half the block unused, and the set stays allocated
+  // for the whole sync, including every HTTPS fetch. Hand the slack back.
+  if (count == 0) {
+    free(data);
+    data = nullptr;
+    capacity = 0;
+  } else if (count < capacity) {
+    auto* trimmed = static_cast<uint64_t*>(realloc(data, count * sizeof(uint64_t)));
+    if (trimmed) {
+      data = trimmed;
+      capacity = count;
+    }
+  }
 }
 
 bool KeySet::contains(const uint64_t key) const {

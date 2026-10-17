@@ -214,6 +214,15 @@ void OpdsBookBrowserActivity::loop() {
     return;
   }
 
+  if (reloadAfterSync) {
+    // launchLibrarySync() freed this page; fetch it again (same URL, so the
+    // same catalogue page and sync row).
+    reloadAfterSync = false;
+    showLoadingBeforeFetch();
+    fetchFeed(currentPath);
+    return;
+  }
+
   if (state == BrowserState::ERROR) {
     int tx = 0;
     int ty = 0;
@@ -776,6 +785,15 @@ void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
 
 void OpdsBookBrowserActivity::launchLibrarySync() {
   if (syncFeedUrl.empty()) return;
+  // The sync's HTTPS fetches run while this activity stays alive underneath.
+  // On X3/X4 a loaded page (the entry array plus up to 50 books' strings,
+  // ~6-13 KB) was enough to starve them: the parser or the TLS handshake ran
+  // out of memory. Free the page first, before the sync screen allocates,
+  // and reload it when the sync screen closes.
+  clearEntries();
+  entries.reset();
+  state = BrowserState::LOADING;
+  statusMessage = tr(STR_LOADING);
   auto sync = makeUniqueNoThrow<OpdsLibrarySyncActivity>(renderer, mappedInput, server, syncFeedUrl, syncFeedTitle);
   if (!sync) {
     LOG_ERR("OPDS", "Cannot allocate library sync");
@@ -784,8 +802,12 @@ void OpdsBookBrowserActivity::launchLibrarySync() {
     requestUpdate();
     return;
   }
-  // The rows keep their indices; the sync screen returns to this same list.
-  startActivityForResult(std::move(sync), [this](const ActivityResult&) { requestUpdate(); });
+  // The handler runs after the sync activity is destroyed, so the reload in
+  // loop() gets its memory back.
+  startActivityForResult(std::move(sync), [this](const ActivityResult&) {
+    reloadAfterSync = true;
+    requestUpdate();
+  });
 }
 
 void OpdsBookBrowserActivity::requestDownload(const OpdsEntry& book) {

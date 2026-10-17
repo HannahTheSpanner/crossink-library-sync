@@ -99,7 +99,13 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
 
   const char* currentPos = reinterpret_cast<const char*>(xmlData);
   size_t remaining = length;
-  constexpr size_t chunkSize = 1024;
+  // expat's input buffer starts at 2 KB and must fit this slice plus up to
+  // 1 KB of context it keeps (XML_CONTEXT_BYTES) and any unfinished token.
+  // 1 KB slices overflowed it partway through a page, and growing to 4 KB
+  // needs a 4 KB block while the 2 KB one is still held. On X3/X4, during an
+  // HTTPS fetch, that block is often not there (library sync failed with
+  // BUFFER_MEMORY after 2366 bytes). 512-byte slices keep the 2 KB buffer.
+  constexpr size_t chunkSize = 512;
 
   while (remaining > 0) {
     const size_t toRead = remaining < chunkSize ? remaining : chunkSize;

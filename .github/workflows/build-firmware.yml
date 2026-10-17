@@ -46,6 +46,7 @@ jobs:
           targets="OpdsParserTest"
           if [ -d test/opds_library_match ]; then targets="$targets OpdsLibraryMatchTest"; fi
           if [ -d test/tls_record_reserve ]; then targets="$targets TlsRecordReserveTest"; fi
+          if [ -d test/opds_parser_memory ]; then targets="$targets OpdsParserMemoryTest"; fi
           cmake --build build-tests -j4 --target $targets
 
       - name: Run OPDS and TLS tests

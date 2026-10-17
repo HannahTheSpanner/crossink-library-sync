@@ -151,3 +151,26 @@ TEST(OpdsLibraryMatchTest, KeySetSortsAndFinds) {
   EXPECT_EQ(set.size(), 0u);
   EXPECT_FALSE(set.contains(7));
 }
+
+// seal() trims spare capacity; the set must still grow afterwards.
+TEST(OpdsLibraryMatchTest, KeySetGrowsAgainAfterSeal) {
+  KeySet set;
+  for (uint64_t i = 1; i <= 24; ++i) ASSERT_TRUE(set.add(i));
+  set.seal();
+  EXPECT_EQ(set.size(), 24u);
+  for (uint64_t i = 25; i <= 300; ++i) ASSERT_TRUE(set.add(i));
+  set.seal();
+  EXPECT_EQ(set.size(), 300u);
+  EXPECT_TRUE(set.contains(1));
+  EXPECT_TRUE(set.contains(24));
+  EXPECT_TRUE(set.contains(300));
+  EXPECT_FALSE(set.contains(301));
+
+  KeySet empty;
+  ASSERT_TRUE(empty.add(0));  // ignored
+  empty.seal();
+  EXPECT_EQ(empty.size(), 0u);
+  ASSERT_TRUE(empty.add(9));
+  empty.seal();
+  EXPECT_TRUE(empty.contains(9));
+}
