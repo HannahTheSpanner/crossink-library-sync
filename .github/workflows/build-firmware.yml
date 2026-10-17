@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   host-tests:
-    name: Host tests (OPDS)
+    name: Host tests (OPDS, TLS)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -45,10 +45,11 @@ jobs:
         run: |
           targets="OpdsParserTest"
           if [ -d test/opds_library_match ]; then targets="$targets OpdsLibraryMatchTest"; fi
+          if [ -d test/tls_record_reserve ]; then targets="$targets TlsRecordReserveTest"; fi
           cmake --build build-tests -j4 --target $targets
 
-      - name: Run OPDS tests
-        run: ctest --test-dir build-tests --output-on-failure -R "Opds"
+      - name: Run OPDS and TLS tests
+        run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve"
 
   firmware:
     name: Firmware (${{ matrix.device }})

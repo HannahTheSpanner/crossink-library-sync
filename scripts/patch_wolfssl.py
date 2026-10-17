@@ -83,6 +83,9 @@ RESERVE_DECL_ORIGINAL = """int GrowInputBuffer(WOLFSSL* ssl, int size, int usedL
 RESERVE_DECL_PATCHED = f"""{RESERVE_MARKER}
 #if defined(FREEINK_TLS_RECORD_RESERVE)
 void* FreeInkTlsRecordReserveTake(unsigned int want, unsigned int* capacity);
+/* Referenced by TlsRecordReserve.cpp so the firmware fails to link, rather than
+   silently losing the fix, if this patch was not applied. */
+const int FreeInkTlsRecordReservePatched = 1;
 #endif
 int GrowInputBuffer(WOLFSSL* ssl, int size, int usedLength)
 {{

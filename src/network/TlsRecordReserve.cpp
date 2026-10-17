@@ -9,6 +9,14 @@
 #if defined(FREEINK_NET_WOLFSSL)
 #include <wolfssl/wolfcrypt/memory.h>
 #include <wolfssl/wolfcrypt/settings.h>
+
+// scripts/patch_wolfssl.py must have run: it defines these for the wolfSSL
+// build and patches its input buffer. Fail the build rather than ship firmware
+// that silently lacks the fix.
+#if !defined(FREEINK_TLS_RECORD_RESERVE) || !defined(HAVE_MAX_FRAGMENT)
+#error "wolfSSL was not patched by scripts/patch_wolfssl.py (TLS record reserve)"
+#endif
+extern "C" const int FreeInkTlsRecordReservePatched;
 #endif
 
 namespace {
@@ -68,6 +76,10 @@ bool acquire() {
     releasePending = false;
     return true;
   }
+#if defined(FREEINK_NET_WOLFSSL)
+  // Link-time proof that wolfSSL's input buffer can borrow the block.
+  if (!FreeInkTlsRecordReservePatched) return false;
+#endif
   if (!installHooks()) return false;
   // Fallible allocation: the caller continues without a reserve (and with the
   // previous behaviour) if even this early block is unavailable.
