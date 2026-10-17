@@ -35,8 +35,10 @@ constexpr char QUEUE_PATH[] = "/.crosspoint/opds_sync_queue.tsv";
 constexpr char PAGE_PATH[] = "/.crosspoint/opds_sync_page.tsv";
 constexpr char LEDGER_TMP_SUFFIX[] = ".tmp";
 constexpr size_t DOWNLOAD_BUFFER_SIZE = 2048;
-constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
-constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
+// Each progress refresh costs download time: an X4 Pro sync log fitted about
+// 0.6 s per refresh (20 per book at one per 5%), a third of a small book's
+// transfer. Refresh at most every 10 s instead.
+constexpr unsigned long DOWNLOAD_PROGRESS_INTERVAL_MS = 10000;
 constexpr unsigned long CATALOGUE_PROGRESS_MIN_UPDATE_MS = 3000;
 constexpr int DOWNLOAD_ATTEMPTS = 2;
 constexpr unsigned long RETRY_BACKOFF_MS = 1000;
@@ -863,9 +865,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
           currentTotal = total;
           const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(done) * 100 / total) : 0;
           const unsigned long now = millis();
-          if (percent >= 100 || lastRenderedPercent < 0 ||
-              percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
-              now - lastUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
+          if (lastRenderedPercent < 0 || now - lastUpdateMs >= DOWNLOAD_PROGRESS_INTERVAL_MS) {
             lastRenderedPercent = percent;
             lastUpdateMs = now;
             requestUpdate(true);

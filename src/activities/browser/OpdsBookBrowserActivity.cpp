@@ -47,8 +47,10 @@ constexpr size_t OPDS_DOWNLOAD_BUFFER_SIZE = 2048;
 constexpr fui::ActionId ACTION_ROW = 1;
 constexpr fui::ActionId ACTION_SEARCH = 2;
 constexpr fui::ActionId ACTION_CANCEL = 3;
-constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
-constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
+// Each progress refresh costs download time: an X4 Pro sync log fitted about
+// 0.6 s per refresh (20 per book at one per 5%), a third of a small book's
+// transfer. Refresh at most every 10 s instead.
+constexpr unsigned long DOWNLOAD_PROGRESS_INTERVAL_MS = 10000;
 // KOReader's library-sync retries each catalog page three times; a book is
 // larger, so it gets one extra attempt rather than two.
 constexpr int FEED_ATTEMPTS = 3;
@@ -924,9 +926,7 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
           downloadTotal = total;
           const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
           const unsigned long now = millis();
-          if (percent >= 100 || lastRenderedPercent < 0 ||
-              percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
-              now - lastProgressUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
+          if (lastRenderedPercent < 0 || now - lastProgressUpdateMs >= DOWNLOAD_PROGRESS_INTERVAL_MS) {
             lastRenderedPercent = percent;
             lastProgressUpdateMs = now;
             requestUpdate(true);

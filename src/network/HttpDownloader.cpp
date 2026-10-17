@@ -682,7 +682,11 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   }
 
   if (options.validate && !options.validate(writePath)) {
-    LOG_ERR("HTTP", "Downloaded file failed validation: %s", writePath.c_str());
+    // expected=0 means the server sent no Content-Length, so a connection cut
+    // short looks complete until this check; a full-length file that fails
+    // means the copy on the server is itself damaged.
+    LOG_ERR("HTTP", "Downloaded file failed validation: %s (%zu bytes, expected %zu, transfer %lu ms)",
+            writePath.c_str(), sink.downloaded, sink.total, transferMs);
     Storage.remove(writePath.c_str());
     return HTTP_ERROR;
   }
