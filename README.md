@@ -4,9 +4,9 @@ This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my 
 
 It is CrossInk v1.6.1 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
-> **A note on credit.** I take no credit for the work in this fork. I leaned heavily on Claude, Anthropic's AI model, to write the code, hunt down the bugs and write these docs. My contribution was mostly saying what I wanted, plugging in a USB cable, pasting serial logs and reporting, more than once, that it still didn't work.
+> **A note on credit.** I take no credit for the work in this fork. Claude, Anthropic’s AI model, wrote the code, chased down the bugs and wrote these docs. My role was project management in the loosest possible sense: describing what I wanted, plugging in a USB cable, pasting serial logs, and announcing “it still doesn’t work” with the confidence of someone who could not have fixed it herself.
 >
-> Everything here sits on firmware that people designed, wrote, debugged and still maintain by hand, for a device with a few hundred kilobytes of memory. That takes real skill and a lot of hard work, and none of this fork would exist without it. If this fork is useful to you, please support the humans who did that work: the authors of CrossPoint and CrossInk, listed under [Credits and support](#credits-and-support).
+> Everything here sits on firmware that people designed, wrote, debugged and still maintain by hand, for a device with a few hundred kilobytes of memory. That takes real skill and a lot of hard work, and none of this fork would exist without it. If this fork is useful to you, please support the humans who did that work: the authors of CrossPoint and CrossInk, listed under [Credits and support](https://github.com/HannahTheSpanner/crossink-library-sync#credits-and-support).
 
 ## What this fork changes
 
