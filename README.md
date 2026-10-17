@@ -2,13 +2,15 @@
 
 This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my preferred of the popular forks of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), the open firmware for Xteink e-readers.
 
-It is CrossInk v1.6.1 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. Everything else (fonts, themes, reading stats, controls and so on) is CrossInk's work and behaves exactly as it does upstream. See the [CrossInk repository](https://github.com/uxjulia/crossink) for those features.
+It is CrossInk v1.6.1 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
 ## What this fork changes
 
 ### 1. Sync missing books from an OPDS catalogue
 
 CrossInk's OPDS browser downloads one book at a time. This fork adds a **Sync missing books** row that compares a whole catalogue with the books on the SD card and downloads everything that is missing, in one go.
+
+This would not be possible without the fantastic [Library Sync plugin for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson. The feature is a port of its "Sync missing books" flow; see [Credit: Library Sync for KOReader](#credit-library-sync-for-koreader) for how it was ported.
 
 **Where it appears**
 
@@ -83,7 +85,7 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
 
 ## Credit: Library Sync for KOReader
 
-The sync feature is a port of the "Sync missing books" flow from [Library Sync for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson (komadorirobin), released under the MIT licence. All credit for the idea and the workflow goes to that project. If you use KOReader, it is the plugin to use, and it does far more than this port.
+This feature would not be possible without the fantastic [Library Sync for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson ([komadorirobin](https://github.com/komadorirobin)), released under the MIT licence. The sync feature is a port of its "Sync missing books" flow, and all credit for the idea and the workflow goes to that project. If you use KOReader, it is the plugin to use, and it does far more than this port.
 
 **How it was ported.** No code was copied: the plugin is Lua running inside KOReader, and this fork is C++ firmware for a microcontroller. What carried over is the plugin's design:
 
@@ -137,10 +139,21 @@ cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibra
 ctest --test-dir build-tests -R "Opds|TlsRecordReserve"
 ```
 
-## Upstream and licence
+## Credits and support
 
-- [CrossInk](https://github.com/uxjulia/crossink) is by uxjulia, and almost all of this firmware is her work and the work of CrossPoint's contributors. Please report problems with anything other than library sync and the OPDS fixes above to CrossInk, not here. If you'd like to support CrossInk, uxjulia has a [Ko-fi](https://ko-fi.com/Q5Q01M6S7).
-- [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) is the firmware CrossInk is built on.
-- [Library Sync for KOReader](https://github.com/komadorirobin/library-sync.koplugin) is the plugin the sync feature is ported from.
+This fork stands on two firmware projects, and the credit for nearly all of it belongs to them equally. My changes are the sync feature and the OPDS fixes described above.
+
+**CrossPoint Reader** is the open-source firmware for Xteink e-readers that CrossInk is a fork of. Credit goes to diirge and the CrossPoint team. The project was started by Dave Allie and is built by a growing community of contributors.
+- GitHub: [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
+- Support: [fund CrossPoint's contributors on royalty.dev](https://app.royalty.dev/crosspoint-reader/crosspoint-reader). CrossPoint also receives a small share of each X3/X4 Developer Edition sold through [crosspointreader.com](https://crosspointreader.com).
+
+**CrossInk** is uxjulia's fork of CrossPoint, adding the typography, themes, reading stats and reader features this fork is built on.
+- GitHub: [uxjulia/crossink](https://github.com/uxjulia/crossink)
+- Support: [Ko-fi](https://ko-fi.com/uxjulia) or [GitHub Sponsors](https://github.com/sponsors/uxjulia)
+
+**Library Sync for KOReader** by Robin Bolinsson is the plugin the sync feature is ported from.
+- GitHub: [komadorirobin/library-sync.koplugin](https://github.com/komadorirobin/library-sync.koplugin)
+
+Please report problems with anything other than library sync and the OPDS fixes above to CrossInk or CrossPoint, not here.
 
 This fork is released under the same MIT licence as CrossPoint and CrossInk; see [LICENSE](./LICENSE).
