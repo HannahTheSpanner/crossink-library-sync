@@ -64,7 +64,17 @@ class HttpDownloader {
     // writing anything if the SD card cannot hold the file. The first check
     // can scan the whole FAT, so leave it off for small files.
     bool checkFreeSpace = false;
+    // When set, receives the final HTTP status: 0 when no response arrived
+    // (connect, TLS, or transport failure), otherwise the status code, which
+    // is 200 for a body that was cut short. Lets callers retry transient
+    // failures without retrying a definitive answer such as 401 or 404.
+    int* responseStatus = nullptr;
   };
+
+  // True for failures worth retrying: no response, a body cut short, or a
+  // server-side/temporary status (408, 429, 5xx). Client errors, a full SD
+  // card, file errors and cancellation are definitive.
+  static bool isRetryable(DownloadError result, int responseStatus);
 
   /**
    * Fetch text content from a URL with optional credentials.

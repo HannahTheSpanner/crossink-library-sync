@@ -35,6 +35,7 @@
 #include "fontIds.h"
 #include "network/DownloadFileSwap.h"
 #include "network/HttpDownloader.h"
+#include "network/TlsRecordReserve.h"
 #include "util/BookCacheUtils.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
@@ -48,6 +49,23 @@ constexpr fui::ActionId ACTION_SEARCH = 2;
 constexpr fui::ActionId ACTION_CANCEL = 3;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
+// KOReader's library-sync retries each catalog page three times; a book is
+// larger, so it gets one extra attempt rather than two.
+constexpr int FEED_ATTEMPTS = 3;
+constexpr int DOWNLOAD_ATTEMPTS = 2;
+constexpr unsigned long RETRY_BACKOFF_MS = 1000;
+
+// "Failed to fetch feed (HTTP 503)": the status tells a rejected login (401),
+// a missing page (404) and a server fault apart without a serial log.
+std::string withHttpStatus(const char* message, const int responseStatus) {
+  std::string out = message;
+  if (responseStatus > 0 && responseStatus != 200) {
+    char status[16];
+    snprintf(status, sizeof(status), " (HTTP %d)", responseStatus);
+    out += status;
+  }
+  return out;
+}
 
 // Shared with library sync so both name a download identically.
 std::string buildBookFilenameBase(const OpdsEntry& book, const OpdsFilenameFormat format) {
@@ -90,6 +108,9 @@ void OpdsBookBrowserActivity::onEnter() {
   Activity::onEnter();
 
   sdFontSystem.releaseLoadedFont(renderer);
+  // Before WiFi starts: on C3 boards this is the last point where a
+  // record-sized contiguous block is reliably free (see TlsRecordReserve.h).
+  TlsRecordReserve::acquire();
 
   state = BrowserState::CHECK_WIFI;
   entryCount = 0;
@@ -132,6 +153,8 @@ void OpdsBookBrowserActivity::onExit() {
   clearEntries();
   entries.reset();
   navigationHistory.clear();
+  retryDownload.reset();
+  TlsRecordReserve::release();
 
 #ifndef SIMULATOR
   if (WiFi.getMode() != WIFI_MODE_NULL) {
@@ -195,14 +218,28 @@ void OpdsBookBrowserActivity::loop() {
     int tx = 0;
     int ty = 0;
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tx, ty)) {
-      if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+      if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+        launchWifiSelection();
+      } else if (retryDownload) {
+        // Retry the book that failed, not the catalog page behind it.
+        const OpdsEntry book = *retryDownload;
+        const std::string path = std::move(retryDownloadPath);
+        retryDownload.reset();
+        downloadBook(book, path);
+      } else {
         showLoadingBeforeFetch();
         fetchFeed(currentPath);
-      } else {
-        launchWifiSelection();
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      navigateBack();
+      if (retryDownload && entryCount > 0) {
+        // The catalog page is still loaded; go back to it instead of leaving it.
+        retryDownload.reset();
+        state = BrowserState::BROWSING;
+        requestUpdate();
+      } else {
+        retryDownload.reset();
+        navigateBack();
+      }
     }
     return;
   }
@@ -567,21 +604,38 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
   // HttpDownloader can scope Basic auth even for legacy scheme-less entries.
   const std::string authorizationOrigin = UrlUtils::ensureProtocol(server.url);
   LOG_DBG("OPDS", "Fetching: %s", UrlUtils::forLog(url).c_str());
+  retryDownload.reset();
   OpdsParser parser(entries.get(), MAX_OPDS_FEED_ENTRIES);
-  {
-    OpdsParserStream stream{parser};
-    HttpDownloader::DownloadOptions downloadOptions;
-    downloadOptions.transport = HttpDownloader::Transport::WOLFSSL;
-    downloadOptions.authorizationOrigin = authorizationOrigin;
-    const auto result = HttpDownloader::streamUrl(
-        url, [&stream](const uint8_t* data, const size_t len) { return stream.write(data, len) == len; }, nullptr,
-        server.username, server.password, std::move(downloadOptions));
-    if (result != HttpDownloader::OK) {
+  for (int attempt = 1;; ++attempt) {
+    int responseStatus = 0;
+    HttpDownloader::DownloadError result;
+    {
+      OpdsParserStream stream{parser};
+      HttpDownloader::DownloadOptions downloadOptions;
+      downloadOptions.transport = HttpDownloader::Transport::WOLFSSL;
+      downloadOptions.authorizationOrigin = authorizationOrigin;
+      downloadOptions.responseStatus = &responseStatus;
+      result = HttpDownloader::streamUrl(
+          url, [&stream](const uint8_t* data, const size_t len) { return stream.write(data, len) == len; }, nullptr,
+          server.username, server.password, std::move(downloadOptions));
+    }
+    if (result == HttpDownloader::OK) break;
+
+    if (attempt >= FEED_ATTEMPTS || !HttpDownloader::isRetryable(result, responseStatus)) {
+      // Drop any entries parsed from the failed attempt so their strings do
+      // not outlive the error.
+      for (size_t i = 0; i < parser.getEntryCount(); ++i) entries[i] = OpdsEntry{};
       state = BrowserState::ERROR;
-      errorMessage = tr(STR_FETCH_FEED_FAILED);
+      errorMessage = withHttpStatus(tr(STR_FETCH_FEED_FAILED), responseStatus);
       requestUpdate();
       return;
     }
+    LOG_ERR("OPDS", "Feed attempt %d/%d failed (result %d, status %d); retrying", attempt, FEED_ATTEMPTS,
+            static_cast<int>(result), responseStatus);
+    // Free what the partial attempt parsed before the next one allocates again.
+    for (size_t i = 0; i < parser.getEntryCount(); ++i) entries[i] = OpdsEntry{};
+    parser.clear();
+    delay(RETRY_BACKOFF_MS * attempt);
   }
 
   if (!parser) {
@@ -764,6 +818,7 @@ void OpdsBookBrowserActivity::requestDownload(const OpdsEntry& book) {
 }
 
 void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::string& filename) {
+  retryDownload.reset();
   state = BrowserState::DOWNLOADING;
   statusMessage = book.title;
   downloadProgress = downloadTotal = 0;
@@ -834,23 +889,42 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
   };
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = 0;
+  int responseStatus = 0;
+  downloadOptions.responseStatus = &responseStatus;
 
-  const auto result = HttpDownloader::downloadToFile(
-      downloadUrl, filename,
-      [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
-        downloadProgress = downloaded;
-        downloadTotal = total;
-        const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
-        const unsigned long now = millis();
-        if (percent >= 100 || lastRenderedPercent < 0 ||
-            percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
-            now - lastProgressUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
-          lastRenderedPercent = percent;
-          lastProgressUpdateMs = now;
-          requestUpdate(true);
-        }
-      },
-      &cancelRequested, server.username, server.password, downloadOptions);
+  HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
+  for (int attempt = 1;; ++attempt) {
+    lastRenderedPercent = -1;
+    result = HttpDownloader::downloadToFile(
+        downloadUrl, filename,
+        [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
+          downloadProgress = downloaded;
+          downloadTotal = total;
+          const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;
+          const unsigned long now = millis();
+          if (percent >= 100 || lastRenderedPercent < 0 ||
+              percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
+              now - lastProgressUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
+            lastRenderedPercent = percent;
+            lastProgressUpdateMs = now;
+            requestUpdate(true);
+          }
+        },
+        &cancelRequested, server.username, server.password, downloadOptions);
+    if (result == HttpDownloader::OK || attempt >= DOWNLOAD_ATTEMPTS ||
+        !HttpDownloader::isRetryable(result, responseStatus)) {
+      break;
+    }
+    LOG_ERR("OPDS", "Download attempt %d/%d failed (status %d); retrying", attempt, DOWNLOAD_ATTEMPTS, responseStatus);
+    downloadProgress = downloadTotal = 0;
+    requestUpdate(true);
+    delay(RETRY_BACKOFF_MS);
+    // A Back press or Cancel during the pause still stops the transfer.
+    if (pollCancel()) {
+      result = HttpDownloader::ABORTED;
+      break;
+    }
+  }
 
   if (result == HttpDownloader::OK) {
     clearBookCache(filename);
@@ -865,7 +939,12 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
     state = BrowserState::BROWSING;
   } else {
     state = BrowserState::ERROR;
-    errorMessage = result == HttpDownloader::INSUFFICIENT_SPACE ? tr(STR_SD_CARD_FULL) : tr(STR_DOWNLOAD_FAILED);
+    errorMessage = result == HttpDownloader::INSUFFICIENT_SPACE
+                       ? std::string(tr(STR_SD_CARD_FULL))
+                       : withHttpStatus(tr(STR_DOWNLOAD_FAILED), responseStatus);
+    // Retry repeats this download; Back returns to the loaded list.
+    retryDownload = makeUniqueNoThrow<OpdsEntry>(book);
+    retryDownloadPath = filename;
   }
   requestUpdate();
 }

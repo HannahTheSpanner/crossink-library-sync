@@ -106,6 +106,7 @@ struct Sink {
   size_t downloaded = 0;
   size_t total = 0;
   bool rangeIgnored = false;
+  int lastStatus = 0;
 };
 
 void setRequestHeaders(esp_http_client_handle_t client, const std::string& username, const std::string& password,
@@ -197,6 +198,7 @@ HttpDownloader::DownloadError runGetWolfSsl(const std::string& url, const std::s
         },
         [&sink]() { return isCancelRequested(sink.cancelFlag, sink.shouldCancel); });
 
+    sink.lastStatus = status > 0 ? status : 0;
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (sink.rangeIgnored) {
       LOG_DBG("HTTP", "Server ignored range request; restarting download");
@@ -301,6 +303,7 @@ HttpDownloader::DownloadError runGetDefault(const std::string& url, const std::s
 
     int64_t responseLength = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
+    sink.lastStatus = responseLength >= 0 && status > 0 ? status : 0;
     if (responseLength < 0) {
       LOG_ERR("HTTP", "Fetch headers failed: %lld", static_cast<long long>(responseLength));
       logNetworkState("Fetch headers failure");
@@ -497,7 +500,16 @@ HttpDownloader::DownloadError HttpDownloader::streamUrl(const std::string& url, 
   sink.progress = std::move(progress);
   sink.shouldCancel = std::move(options.shouldCancel);
   const size_t bufferSize = options.bufferSize > 0 ? options.bufferSize : DEFAULT_DOWNLOAD_BUFFER_SIZE;
-  return runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
+  const DownloadError result =
+      runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
+  if (options.responseStatus) *options.responseStatus = sink.lastStatus;
+  return result;
+}
+
+bool HttpDownloader::isRetryable(const DownloadError result, const int responseStatus) {
+  if (result != HTTP_ERROR) return false;
+  return responseStatus <= 0 || responseStatus == 200 || responseStatus == 206 || responseStatus == 408 ||
+         responseStatus == 429 || responseStatus >= 500;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
@@ -589,6 +601,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
     result = runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
   }
+
+  if (options.responseStatus) *options.responseStatus = sink.lastStatus;
 
   if (fileOpen) {
     const bool synced = file.sync();

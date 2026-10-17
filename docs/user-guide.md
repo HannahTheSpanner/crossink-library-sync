@@ -512,6 +512,12 @@ A sync runs in three steps:
 
 Nothing is ever replaced or deleted. Deleting a synced book from the device means the next sync downloads it again.
 
+##### HTTPS servers and memory (X3 and X4)
+
+HTTPS sends data in records of up to 16 KB, and the reader has to hold a whole record in one block of memory before it can decrypt it. The X3 and X4 have no PSRAM, so when the OPDS browser opens they set aside one record-sized buffer before WiFi starts, and they ask the server for 2 KB records. If the server agrees, the buffer is handed back straight away; the serial log then shows `Server accepted 2048-byte TLS records`. Either way, large book lists and EPUB downloads load the same as small pages.
+
+If an OPDS page or download still fails, the error shows the server's HTTP status when there was one: `HTTP 401` means the username or password was rejected, `HTTP 404` that the page or book no longer exists, and `HTTP 5xx` a problem on the server. Brief connection failures are retried automatically before an error is shown.
+
 #### 3.6.6 Web Settings (Wi-Fi + OPDS)
 
 While in **File Transfer** mode, the web settings page includes management cards for both **Wi-Fi Networks** and **OPDS Servers**.

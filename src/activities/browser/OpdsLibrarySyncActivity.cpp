@@ -38,6 +38,8 @@ constexpr size_t DOWNLOAD_BUFFER_SIZE = 2048;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
 constexpr unsigned long CATALOGUE_PROGRESS_MIN_UPDATE_MS = 3000;
+constexpr int DOWNLOAD_ATTEMPTS = 2;
+constexpr unsigned long RETRY_BACKOFF_MS = 1000;
 // The low 16 bits of a metadata entry carry the library index ordinal so a
 // metadata match can be checked against the card (the index may be stale).
 constexpr uint64_t ORDINAL_MASK = 0xFFFFULL;
@@ -620,7 +622,9 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   std::string pageNext;
   size_t pageSeen = 0;
   bool pageOk = false;
+  int responseStatus = 0;
   for (int attempt = 1; attempt <= PAGE_ATTEMPTS && !pageOk; ++attempt) {
+    if (attempt > 1) delay(RETRY_BACKOFF_MS * (attempt - 1));
     pageBooks = pageMissing = 0;
     pageWriteFailed = false;
     pageFile = Storage.open(PAGE_PATH, O_WRONLY | O_CREAT | O_TRUNC);
@@ -640,6 +644,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     options.transport = HttpDownloader::Transport::WOLFSSL;
     options.authorizationOrigin = authorizationOrigin;
     options.shouldCancel = [this] { return pollCancel(); };
+    options.responseStatus = &responseStatus;
     const auto result = HttpDownloader::streamUrl(
         pageUrl,
         [&parser](const uint8_t* data, const size_t len) {
@@ -670,15 +675,21 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       pageNext = parser.getNextPageUrl();
       pageSeen = parser.getEntriesSeen();
     } else {
-      LOG_ERR(LOG_TAG, "Page %u attempt %d failed (http %d, parse %d)", static_cast<unsigned>(pagesFetched + 1),
-              attempt, static_cast<int>(result), static_cast<int>(parser.getErrorReason()));
+      LOG_ERR(LOG_TAG, "Page %u attempt %d failed (http %d, status %d, parse %d)",
+              static_cast<unsigned>(pagesFetched + 1), attempt, static_cast<int>(result), responseStatus,
+              static_cast<int>(parser.getErrorReason()));
+      // A rejected login or a missing page will not change on retry.
+      if (result != HttpDownloader::OK && !HttpDownloader::isRetryable(result, responseStatus)) break;
     }
   }
 
   if (!pageOk) {
     // library-sync stops before downloading anything when the catalogue
     // cannot be read completely; partial results would look like a full sync.
-    fail(tr(STR_FETCH_FEED_FAILED));
+    char message[96];
+    snprintf(message, sizeof(message), responseStatus > 0 && responseStatus != 200 ? "%s (HTTP %d)" : "%s",
+             tr(STR_FETCH_FEED_FAILED), responseStatus);
+    fail(message);
     return;
   }
   if (!appendPageToQueue()) {
@@ -727,7 +738,9 @@ bool OpdsLibrarySyncActivity::appendPageToQueue() {
   }
   page.close();
   if (!queue.close()) ok = false;
-  if (!ok) LOG_ERR(LOG_TAG, "Queue append failed");
+  if (!ok) {
+    LOG_ERR(LOG_TAG, "Queue append failed");
+  }
   return ok;
 }
 
@@ -821,22 +834,39 @@ void OpdsLibrarySyncActivity::downloadNext() {
   int lastRenderedPercent = -1;
   unsigned long lastUpdateMs = 0;
   bool cancelFlag = false;
-  const auto result = HttpDownloader::downloadToFile(
-      url, path,
-      [this, &lastRenderedPercent, &lastUpdateMs](const size_t done, const size_t total) {
-        currentProgress = done;
-        currentTotal = total;
-        const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(done) * 100 / total) : 0;
-        const unsigned long now = millis();
-        if (percent >= 100 || lastRenderedPercent < 0 ||
-            percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
-            now - lastUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
-          lastRenderedPercent = percent;
-          lastUpdateMs = now;
-          requestUpdate(true);
-        }
-      },
-      &cancelFlag, server.username, server.password, std::move(options));
+  int responseStatus = 0;
+  options.responseStatus = &responseStatus;
+  HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
+  for (int attempt = 1;; ++attempt) {
+    lastRenderedPercent = -1;
+    result = HttpDownloader::downloadToFile(
+        url, path,
+        [this, &lastRenderedPercent, &lastUpdateMs](const size_t done, const size_t total) {
+          currentProgress = done;
+          currentTotal = total;
+          const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(done) * 100 / total) : 0;
+          const unsigned long now = millis();
+          if (percent >= 100 || lastRenderedPercent < 0 ||
+              percent >= lastRenderedPercent + DOWNLOAD_PROGRESS_STEP_PERCENT ||
+              now - lastUpdateMs >= DOWNLOAD_PROGRESS_MIN_UPDATE_MS) {
+            lastRenderedPercent = percent;
+            lastUpdateMs = now;
+            requestUpdate(true);
+          }
+        },
+        &cancelFlag, server.username, server.password, options);
+    if (result == HttpDownloader::OK || attempt >= DOWNLOAD_ATTEMPTS ||
+        !HttpDownloader::isRetryable(result, responseStatus)) {
+      break;
+    }
+    LOG_ERR(LOG_TAG, "Download attempt %d/%d failed (status %d); retrying: %s", attempt, DOWNLOAD_ATTEMPTS,
+            responseStatus, title.c_str());
+    delay(RETRY_BACKOFF_MS);
+    if (pollCancel()) {
+      result = HttpDownloader::ABORTED;
+      break;
+    }
+  }
 
   switch (result) {
     case HttpDownloader::OK:

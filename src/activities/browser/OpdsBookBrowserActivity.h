@@ -87,6 +87,10 @@ class OpdsBookBrowserActivity final : public Activity {
   // A blocking downloader consumes the one-shot Home event itself. Defer the
   // activity exit until HttpDownloader has unwound and closed the partial file.
   bool goHomeAfterCancel = false;
+  // Set while the error screen shows a failed download: Retry repeats that
+  // download and Back returns to the still-loaded list. Null for feed errors.
+  std::unique_ptr<OpdsEntry> retryDownload;
+  std::string retryDownloadPath;
 
   // Single screen fn dispatching on `state`: every state shares the themed
   // header and gets built through FreeInkUI.

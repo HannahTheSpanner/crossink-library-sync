@@ -4,6 +4,12 @@
 
 - Sync missing books from an OPDS catalog: the OPDS browser can check a whole catalog (or the server's "All Books" catalog) against the books on the device and download every EPUB that is missing, ported from KOReader's Library Sync plugin. Books already on the device are recognized by file name, Library metadata, or an earlier sync, and nothing is replaced or deleted.
 
+### Fixed
+
+- OPDS book lists and book downloads over HTTPS no longer fail with "Failed to fetch feed" or "Download failed" on the X3 and X4. Servers send HTTPS data in records of up to 16 KB, and the reader ran out of contiguous memory to hold one once WiFi was running. The reader now asks servers for 2 KB records, and on boards without PSRAM it sets aside one record-sized buffer when the OPDS browser opens, returning it if the server accepts small records.
+- Retry after a failed OPDS download retries that download instead of reloading the catalog page, and Back returns to the book list.
+- OPDS catalog pages and downloads retry brief connection failures automatically, and OPDS errors show the server's HTTP status (for example "HTTP 401" for a rejected login).
+
 ## [v1.6.1] - 2026-10-03
 
 ### Added
