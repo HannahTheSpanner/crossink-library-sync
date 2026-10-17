@@ -147,7 +147,7 @@ ctest --test-dir build-tests -R "Opds|TlsRecordReserve"
 
 This fork stands on two firmware projects, and the credit for nearly all of it belongs to them equally. My changes are the sync feature and the OPDS fixes described above.
 
-**CrossPoint Reader** is the open-source firmware for Xteink e-readers that CrossInk is a fork of. Credit goes to diirge and the CrossPoint team. The project was started by Dave Allie and is built by a growing community of contributors.
+**CrossPoint Reader** is the open-source firmware for Xteink e-readers that CrossInk is a fork of. Credit goes to [Dave Allie](https://github.com/daveallie), who created it, and the CrossPoint team and community of contributors who build it.
 - GitHub: [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
 - Support: [fund CrossPoint's contributors on royalty.dev](https://app.royalty.dev/crosspoint-reader/crosspoint-reader). CrossPoint also receives a small share of each X3/X4 Developer Edition sold through [crosspointreader.com](https://crosspointreader.com).
 
