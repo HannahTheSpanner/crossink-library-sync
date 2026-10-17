@@ -120,21 +120,18 @@ jobs:
     needs: [host-tests, firmware]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          sparse-checkout: .github/release-body.md
-          sparse-checkout-cone-mode: false
-
       - uses: actions/download-artifact@v7
         with:
           pattern: firmware-*
           merge-multiple: true
           path: dist
 
-      # A release created here from a pushed tag gets the standard notes; one
-      # published from the web UI keeps the notes written there.
+      # Only attaches the images. Notes come from the release itself (written
+      # when it is published in the web UI; .github/release-body.md is the
+      # template) or, for a tag pushed with git, from GitHub's generated notes.
+      # Passing a body here would overwrite notes written in the UI, because
+      # publishing there also fires a tag push.
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*.bin
-          body_path: ${{ github.event_name != 'release' && '.github/release-body.md' || '' }}
           generate_release_notes: ${{ github.event_name != 'release' }}
