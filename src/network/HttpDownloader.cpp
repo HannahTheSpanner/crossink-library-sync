@@ -541,23 +541,39 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.shouldCancel = std::move(options.shouldCancel);
   sink.resumeOffset = resumeOffset;
 
+  const unsigned long startedMs = millis();
+  // Measure free space before the request, not when the first body bytes
+  // arrive. Counting free clusters walks the card's allocation table, which can
+  // take seconds on a large card (the result is cached for only 20 s, so a
+  // library sync repeats it for most books). Done mid-response, it stalls the
+  // connection while the server keeps sending, and servers or proxies may give
+  // up on it.
+  bool haveFreeBytes = false;
+  uint64_t freeBytes = 0;
+#ifndef SIMULATOR
+  // The host storage shim does not expose card capacity.
+  if (options.checkFreeSpace) {
+    // Some SD transports cannot report capacity; let the write fail instead.
+    const uint64_t totalBytes = Storage.totalBytes();
+    if (totalBytes > 0) {
+      const uint64_t usedBytes = Storage.usedBytes();
+      freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
+      haveFreeBytes = true;
+      const unsigned long checkMs = millis() - startedMs;
+      if (checkMs >= 250) LOG_INF("HTTP", "SD free-space check took %lu ms", checkMs);
+    }
+  }
+#endif
+
   FsFile file;
   bool fileOpen = false;
-#ifndef SIMULATOR
   bool spaceChecked = false;
-#endif
   bool insufficientSpace = false;
   auto openOutputFile = [&]() {
     if (fileOpen) return true;
-#ifndef SIMULATOR
-    // The host storage shim does not expose card capacity.
-    if (options.checkFreeSpace && !spaceChecked) {
+    if (haveFreeBytes && !spaceChecked) {
       spaceChecked = true;
-      // Some SD transports cannot report capacity; let the write fail instead.
-      const uint64_t totalBytes = Storage.totalBytes();
-      if (totalBytes > 0 && sink.total > sink.resumeOffset) {
-        const uint64_t usedBytes = Storage.usedBytes();
-        const uint64_t freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
+      if (sink.total > sink.resumeOffset) {
         const uint64_t neededBytes = sink.total - sink.resumeOffset;
         if (freeBytes < neededBytes) {
           LOG_ERR("HTTP", "Insufficient SD space: free=%llu required=%llu", static_cast<unsigned long long>(freeBytes),
@@ -567,7 +583,6 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
         }
       }
     }
-#endif
     if (sink.resumeOffset > 0) {
       file = Storage.open(writePath.c_str(), O_WRONLY | O_APPEND);
     } else {
@@ -586,6 +601,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
 
+  const unsigned long transferStartedMs = millis();
   DownloadError result =
       runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
   if (sink.rangeIgnored) {
@@ -601,6 +617,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     sink.write = [&](const uint8_t* data, size_t len) { return openOutputFile() && file.write(data, len) == len; };
     result = runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
   }
+  const unsigned long transferMs = millis() - transferStartedMs;
 
   if (options.responseStatus) *options.responseStatus = sink.lastStatus;
 
@@ -615,8 +632,10 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   if (insufficientSpace) result = INSUFFICIENT_SPACE;
 
   if (result != OK) {
-    LOG_ERR("HTTP", "Transfer failed: error=%d downloaded=%zu expected=%zu preservePartial=%d resumePartial=%d",
-            static_cast<int>(result), sink.downloaded, sink.total, options.preservePartial, options.resumePartial);
+    LOG_ERR("HTTP",
+            "Transfer failed: error=%d downloaded=%zu expected=%zu after %lu ms preservePartial=%d resumePartial=%d",
+            static_cast<int>(result), sink.downloaded, sink.total, transferMs, options.preservePartial,
+            options.resumePartial);
     if (result == ABORTED || !options.preservePartial) {
       Storage.remove(writePath.c_str());
     }
@@ -647,5 +666,11 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   if (options.stageAsPart && !DownloadFileSwap::publish(destPath)) return FILE_ERROR;
 
+  // Transfer covers connect, TLS handshake and the body; total adds the
+  // free-space check, flushing the file and validation.
+  const unsigned long transferKBps =
+      transferMs > 0 ? static_cast<unsigned long>(static_cast<uint64_t>(sink.downloaded) / transferMs) : 0;
+  LOG_INF("HTTP", "Downloaded %zu bytes: transfer %lu ms (%lu KB/s), total %lu ms", sink.downloaded, transferMs,
+          transferKBps, millis() - startedMs);
   return OK;
 }

@@ -835,6 +835,8 @@ void OpdsLibrarySyncActivity::downloadNext() {
   appendLedger(identity, path);
   return;
 #else
+  LOG_INF(LOG_TAG, "Book %u of %u: %s", static_cast<unsigned>(queueIndex), static_cast<unsigned>(missingBooks),
+          title.c_str());
   LOG_DBG(LOG_TAG, "Downloading %s -> %s", UrlUtils::forLog(url).c_str(), path.c_str());
   HttpDownloader::DownloadOptions options;
   options.shouldCancel = [this] { return pollCancel(); };
