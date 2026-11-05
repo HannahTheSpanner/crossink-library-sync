@@ -1,3 +1,21 @@
+## [v2.0.0-library-sync.2] - 2026-11-06
+
+Refinements from a review of the fork's own code. No new features.
+
+### Changed
+
+- OPDS transfers on the X3 and X4 re-reserve the TLS record buffer before every catalogue page and book download. A server that accepts small records hands the buffer back, and a later transfer may go to a host that does not (a redirect to a file server); the reserve is now taken again whenever the heap still allows it.
+- Retrying a failed catalogue page or download no longer blocks the reader during the pause: Back or Cancel ends it at once. In the OPDS Browser, Back during a page retry gives up on that page.
+- "Entries without an EPUB" in a sync's summary no longer counts links to other catalogues on a mixed root page, only books that could not be downloaded (PDF-only, purchase or LCP).
+- The sync's counts refresh at once when a queued book turns out to be on the card already.
+- Metalio E-Ink 4: the page buttons behind the I2C expander are polled every 20 ms while buttons are in use and every 100 ms after a few quiet seconds, instead of every 20 ms all the time.
+
+### Internal
+
+- The OPDS Browser keeps its "Sync missing books" and previous-page rows beside the parsed entries instead of moving every parsed entry down to make room.
+- OPDS parsers reset their working entry in place instead of building a temporary with the 257-byte description on the stack inside a parser callback.
+- The library sync's SD-card queue and per-server ledger moved into `OpdsSyncQueue`, with a host test (`test/opds_sync_queue`) covering the record format, page commits, damaged records and ledger compaction.
+
 ## [v2.0.0-library-sync.1] - 2026-11-05
 
 This fork is now based on CrossInk v2.0.0 (its release candidate of 2026-11-04). Everything in CrossInk's v2.0.0 notes below applies, including OPDS 2 catalogs, per-server download folders, Use Server Filename, book description previews, and the OPDS Browser's move into File Transfer.
