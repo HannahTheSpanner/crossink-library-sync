@@ -40,12 +40,12 @@ struct OpdsCatalogSmokeTest {
   static void start(OpdsBookBrowserActivity& browser) {
     {
       RenderLock lock;
-      require(browser.entries && browser.entryCount == FIXTURE_ROWS && browser.hasSyncRow, "fixture catalog missing");
+      require(browser.entries && browser.rowCount() == FIXTURE_ROWS && browser.hasSyncRow, "fixture catalog missing");
       browser.selectorIndex = TIME_MACHINE_ROW;
       browser.topIndex = 0;
       browser.descriptionLines.emplace_back("Allocated preview text that must be released before TLS");
     }
-    browser.requestDownload(browser.entries[TIME_MACHINE_ROW]);
+    browser.requestDownload(browser.rowEntry(TIME_MACHINE_ROW));
     RenderLock lock;
     require(browser.state == State::DOWNLOADING, "download did not start");
     require(!browser.entries && browser.entryCount == 0, "catalog retained during download");
@@ -56,7 +56,7 @@ struct OpdsCatalogSmokeTest {
   static void restored(OpdsBookBrowserActivity& browser) {
     render();
     RenderLock lock;
-    require(browser.state == State::BROWSING && browser.entries && browser.entryCount == FIXTURE_ROWS,
+    require(browser.state == State::BROWSING && browser.entries && browser.rowCount() == FIXTURE_ROWS,
             "catalog not restored");
     require(browser.selectorIndex == TIME_MACHINE_ROW && browser.topIndex == 0, "browsing position lost");
     require(browser.currentPath == "/fiction" && browser.navigationHistory.size() == 1 &&
@@ -337,8 +337,8 @@ struct OpdsCatalogSmokeTest {
       case 4: {
         RenderLock lock;
         // The callback must use its owned request, even if this row changes.
-        browser->entries[browser->selectorIndex].title = "Wrong replacement book";
-        browser->entries[browser->selectorIndex].href = "/books/wrong.epub";
+        browser->rowEntry(browser->selectorIndex).title = "Wrong replacement book";
+        browser->rowEntry(browser->selectorIndex).href = "/books/wrong.epub";
       }
         closeConfirmation(false);
         break;
@@ -361,7 +361,7 @@ struct OpdsCatalogSmokeTest {
         browser->server.filenameFormat = OpdsFilenameFormat::TITLE_AUTHOR;
         browser->server.useServerFilename = false;
         require(Storage.writeFile("/books/The Time Machine - H. G. Wells.epub", "original"), "overwrite fixture");
-        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
+        browser->requestDownload(browser->rowEntry(TIME_MACHINE_ROW));
         require(browser->entries != nullptr, "catalog released before initial overwrite approval");
         break;
       case 6:
@@ -378,7 +378,7 @@ struct OpdsCatalogSmokeTest {
         require(Storage.mkdir("/books/Calibre"), "custom folder fixture");
         require(Storage.writeFile("/books/Calibre/The Time Machine - H. G. Wells.epub", "original"),
                 "custom collision");
-        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
+        browser->requestDownload(browser->rowEntry(TIME_MACHINE_ROW));
         require(browser->entries != nullptr, "custom folder ignored for overwrite lookup");
         break;
       case 8:
@@ -390,7 +390,7 @@ struct OpdsCatalogSmokeTest {
         require(Storage.remove("/books/Calibre/The Time Machine - H. G. Wells.epub"), "remove custom collision");
         browser->server.downloadFolder = "/";
         require(Storage.writeFile("/The Time Machine - H. G. Wells.epub", "original"), "root collision");
-        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
+        browser->requestDownload(browser->rowEntry(TIME_MACHINE_ROW));
         require(browser->entries != nullptr, "root override ignored for overwrite lookup");
         break;
       case 10:

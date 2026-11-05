@@ -182,12 +182,12 @@ void OpdsBookBrowserActivity::onExit() {
 }
 
 void OpdsBookBrowserActivity::activateSelected() {
-  if (!entries || entryCount == 0 || selectorIndex < 0 || selectorIndex >= static_cast<int>(entryCount)) return;
+  if (!entries || rowCount() == 0 || selectorIndex < 0 || selectorIndex >= static_cast<int>(rowCount())) return;
   if (hasSyncRow && selectorIndex == 0) {
     launchLibrarySync();
     return;
   }
-  auto& entry = entries[selectorIndex];
+  auto& entry = rowEntry(selectorIndex);
   if (entry.type == OpdsEntryType::BOOK) {
     if (entry.description[0] || !entry.selfHref.empty() || entry.indirect || entry.unsupportedAcquisition) {
       openPublication(entry);
@@ -198,14 +198,14 @@ void OpdsBookBrowserActivity::activateSelected() {
   }
   const int prevRowIndex = hasSyncRow ? 1 : 0;
   const bool pageLink = (hasPrevPageRow && selectorIndex == prevRowIndex) ||
-                        (hasNextPageRow && selectorIndex == static_cast<int>(entryCount) - 1);
+                        (hasNextPageRow && selectorIndex == static_cast<int>(rowCount()) - 1);
   navigateToEntry(entry, pageLink);
 }
 
 void OpdsBookBrowserActivity::onRowEvent(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<OpdsBookBrowserActivity*>(user);
   if (self->state != BrowserState::BROWSING) return;
-  if (event.value < 0 || event.value >= static_cast<int16_t>(self->entryCount)) return;
+  if (event.value < 0 || event.value >= static_cast<int16_t>(self->rowCount())) return;
   self->selectorIndex = event.value;
   // The tapped row leaves the screen either way (new feed or download view);
   // a lingering tap flash would gray an unrelated row on the next list.
@@ -242,7 +242,7 @@ void OpdsBookBrowserActivity::onDescriptionEvent(const fui::ActionEvent& event, 
   if (self->state != BrowserState::DESCRIPTION) return;
   self->app.clearTapFlash();
   if (event.value == 0)
-    self->requestDownload(self->entries[self->selectorIndex]);
+    self->requestDownload(self->rowEntry(self->selectorIndex));
   else
     self->scrollDescription(event.value);
 }
@@ -263,7 +263,7 @@ void OpdsBookBrowserActivity::loop() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      requestDownload(entries[selectorIndex]);
+      requestDownload(rowEntry(selectorIndex));
       return;
     }
     if (uiReady) {
@@ -370,13 +370,13 @@ void OpdsBookBrowserActivity::loop() {
       }
     }
 
-    if (entryCount > 0) {
+    if (rowCount() > 0) {
       // Swipes scroll the viewport; the selection stays put (it may scroll
       // off-screen) and button navigation pulls the view back to it.
       const auto swipe = mappedInput.wasSwipe();
       if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
         const int delta = swipe == MappedInputManager::SwipeDir::Up ? visibleRows : -visibleRows;
-        const int next = scrollListBy(topIndex, delta, visibleRows, static_cast<int>(entryCount));
+        const int next = scrollListBy(topIndex, delta, visibleRows, static_cast<int>(rowCount()));
         if (next != topIndex) {
           topIndex = next;
           requestUpdate();
@@ -386,18 +386,18 @@ void OpdsBookBrowserActivity::loop() {
 
       const auto moveSelection = [this](const int index) {
         selectorIndex = index;
-        topIndex = followListSelection(selectorIndex, topIndex, visibleRows, static_cast<int>(entryCount));
+        topIndex = followListSelection(selectorIndex, topIndex, visibleRows, static_cast<int>(rowCount()));
         requestUpdate();
       };
       buttonNavigator.onNextRelease(
-          [this, &moveSelection] { moveSelection(ButtonNavigator::nextIndex(selectorIndex, entryCount)); });
+          [this, &moveSelection] { moveSelection(ButtonNavigator::nextIndex(selectorIndex, rowCount())); });
       buttonNavigator.onPreviousRelease(
-          [this, &moveSelection] { moveSelection(ButtonNavigator::previousIndex(selectorIndex, entryCount)); });
+          [this, &moveSelection] { moveSelection(ButtonNavigator::previousIndex(selectorIndex, rowCount())); });
       buttonNavigator.onNextContinuous([this, &moveSelection] {
-        moveSelection(ButtonNavigator::nextPageIndex(selectorIndex, entryCount, visibleRows));
+        moveSelection(ButtonNavigator::nextPageIndex(selectorIndex, rowCount(), visibleRows));
       });
       buttonNavigator.onPreviousContinuous([this, &moveSelection] {
-        moveSelection(ButtonNavigator::previousPageIndex(selectorIndex, entryCount, visibleRows));
+        moveSelection(ButtonNavigator::previousPageIndex(selectorIndex, rowCount(), visibleRows));
       });
     }
   }
@@ -495,7 +495,7 @@ void OpdsBookBrowserActivity::screenHeader(UiApp::ScreenType& screen, const bool
 void OpdsBookBrowserActivity::buildBrowsingScreen(UiApp::ScreenType& screen) {
   screenHeader(screen, true);
 
-  if (entryCount == 0) {
+  if (rowCount() == 0) {
     screen.centeredText(tr(STR_NO_ENTRIES), screen.theme().bodyText);
     return;
   }
@@ -505,21 +505,21 @@ void OpdsBookBrowserActivity::buildBrowsingScreen(UiApp::ScreenType& screen) {
   fui::ListProps props;
   props.rowProvider = &OpdsBookBrowserActivity::provideRow;
   props.rowProviderCtx = this;
-  props.count = static_cast<uint16_t>(entryCount);
+  props.count = static_cast<uint16_t>(rowCount());
   props.selectedIndex = static_cast<int16_t>(selectorIndex);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;               // air between the nav chevron and the row edge
   const auto rows = configureUiList(props, screen.theme(), screen.body(), UiListRowType::WithSubtitle);
   visibleRows = rows > 0 ? rows : 1;
-  topIndex = scrollListBy(topIndex, 0, visibleRows, static_cast<int>(entryCount));  // clamp to range
+  topIndex = scrollListBy(topIndex, 0, visibleRows, static_cast<int>(rowCount()));  // clamp to range
   props.topIndex = static_cast<uint16_t>(topIndex);
   screen.list(props);
 }
 
 void OpdsBookBrowserActivity::provideRow(void* user, const uint16_t index, fui::ListItem& item) {
   auto& self = *static_cast<OpdsBookBrowserActivity*>(user);
-  const auto& entry = self.entries[index];
+  const auto& entry = self.rowEntry(index);
   const bool syncRow = self.hasSyncRow && index == 0;
   item.label = entry.title.c_str();
   if (syncRow) {
@@ -540,7 +540,7 @@ void OpdsBookBrowserActivity::provideRow(void* user, const uint16_t index, fui::
 
 void OpdsBookBrowserActivity::buildDescriptionScreen(UiApp::ScreenType& screen) {
   screenHeader(screen, false);
-  const auto& book = entries[selectorIndex];
+  const auto& book = rowEntry(selectorIndex);
   const auto& theme = screen.theme();
   const int16_t lh = screen.target().lineHeight(theme.bodyText.font);
   const int16_t gap = theme.spaceMd;
@@ -641,12 +641,13 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   MappedInputManager::Labels labels;
   switch (state) {
     case BrowserState::BROWSING: {
-      const char* confirmLabel = (hasSyncRow && selectorIndex == 0) ? tr(STR_OPDS_SYNC)
-                                 : (entryCount > 0 && entries[selectorIndex].type == OpdsEntryType::BOOK &&
-                                    !entries[selectorIndex].description[0] && entries[selectorIndex].selfHref.empty() &&
-                                    !entries[selectorIndex].indirect && !entries[selectorIndex].unsupportedAcquisition)
-                                     ? tr(STR_DOWNLOAD)
-                                     : tr(STR_OPEN);
+      const OpdsEntry* selected = rowCount() > 0 ? &rowEntry(selectorIndex) : nullptr;
+      const char* confirmLabel =
+          (hasSyncRow && selectorIndex == 0) ? tr(STR_OPDS_SYNC)
+          : (selected && selected->type == OpdsEntryType::BOOK && !selected->description[0] &&
+             selected->selfHref.empty() && !selected->indirect && !selected->unsupportedAcquisition)
+              ? tr(STR_DOWNLOAD)
+              : tr(STR_OPEN);
       const char* searchLabel = (!searchTemplate.empty() && selectorIndex == 0) ? tr(STR_SEARCH) : tr(STR_DIR_UP);
       labels =
           mappedInput.mapLabels(mappedInput.withBackArrow(tr(STR_BACK)), confirmLabel, searchLabel, tr(STR_DIR_DOWN));
@@ -835,15 +836,11 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
     LOG_DBG("OPDS", "Feed truncated to %zu entries", entryCount);
   }
 
+  // Leading rows in display order: the sync row first, then the page links.
+  addSyncRow(url, parser.hasGroupedPublications());
   if (!prevUrl.empty()) {
     hasPrevPageRow = true;
-    for (size_t i = entryCount; i > 0; --i) {
-      entries[i] = std::move(entries[i - 1]);
-    }
-    entries[0] = OpdsEntry{OpdsEntryType::NAVIGATION,
-                           std::string(mappedInput.resolveLabel(mappedInput.withPreviousPageArrow(tr(STR_PREV_PAGE)))),
-                           "", prevUrl, ""};
-    entryCount++;
+    addLeadingRow(mappedInput.resolveLabel(mappedInput.withPreviousPageArrow(tr(STR_PREV_PAGE))), prevUrl);
   }
   if (!nextUrl.empty()) {
     hasNextPageRow = appendEntry(OpdsEntry{
@@ -851,12 +848,11 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
         std::string(mappedInput.resolveLabel(mappedInput.withNextPageArrow(tr(STR_NEXT_PAGE)))), "", nextUrl, ""});
     if (!hasNextPageRow) LOG_DBG("OPDS", "No room for next-page entry");
   }
-  addSyncRow(url, parser.hasGroupedPublications());
 
   selectorIndex = 0;
   topIndex = 0;
-  state = entryCount == 0 ? BrowserState::ERROR : BrowserState::BROWSING;
-  if (entryCount == 0) errorMessage = tr(STR_NO_ENTRIES);
+  state = rowCount() == 0 ? BrowserState::ERROR : BrowserState::BROWSING;
+  if (rowCount() == 0) errorMessage = tr(STR_NO_ENTRIES);
   requestUpdate();
 }
 
@@ -874,12 +870,23 @@ void OpdsBookBrowserActivity::clearEntries() {
   // A failed fetch can populate slots before entryCount is published. Clear
   // the full bounded array so partial-feed strings cannot survive a retry.
   for (size_t i = 0; entries && i < OPDS_BROWSER_ENTRY_CAPACITY; ++i) {
-    entries[i] = OpdsEntry{};
+    entries[i].reset();
   }
+  for (auto& row : leadingRows) row.reset();
+  leadingRowCount = 0;
   entryCount = 0;
   hasPrevPageRow = false;
   hasNextPageRow = false;
   hasSyncRow = false;
+}
+
+void OpdsBookBrowserActivity::addLeadingRow(std::string title, std::string href) {
+  // The sync row is added before the previous-page row, so it stays first.
+  if (leadingRowCount >= MAX_LEADING_ROWS) return;
+  OpdsEntry& row = leadingRows[leadingRowCount++];
+  row.reset();
+  row.title = std::move(title);
+  row.href = std::move(href);
 }
 
 bool OpdsBookBrowserActivity::appendEntry(OpdsEntry&& entry) {
@@ -924,7 +931,7 @@ void OpdsBookBrowserActivity::navigateBack() {
 // whose books are group previews is not a catalogue of its own.
 void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl, const bool groupedFeed) {
   hasSyncRow = false;
-  if (!entries || entryCount == 0 || entryCount >= OPDS_BROWSER_ENTRY_CAPACITY) return;
+  if (!entries || entryCount == 0) return;
 
   const OpdsEntry* allBooks = nullptr;
   bool hasBooks = false;
@@ -946,11 +953,7 @@ void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl, const bool 
     return;
   }
 
-  for (size_t i = entryCount; i > 0; --i) {
-    entries[i] = std::move(entries[i - 1]);
-  }
-  entries[0] = OpdsEntry{OpdsEntryType::NAVIGATION, tr(STR_OPDS_SYNC_MISSING), "", syncFeedUrl, ""};
-  entryCount++;
+  addLeadingRow(tr(STR_OPDS_SYNC_MISSING), syncFeedUrl);
   hasSyncRow = true;
 }
 
@@ -1311,8 +1314,8 @@ void OpdsBookBrowserActivity::restoreCatalogAfterDownload() {
   fetchFeed(currentPath);
   RenderLock lock;
   if (state != BrowserState::BROWSING) return;  // Keep the fetch/allocation error and Retry path.
-  selectorIndex = std::clamp(downloadSelectorIndex, 0, static_cast<int>(entryCount) - 1);
-  topIndex = scrollListBy(downloadTopIndex, 0, visibleRows, static_cast<int>(entryCount));
+  selectorIndex = std::clamp(downloadSelectorIndex, 0, static_cast<int>(rowCount()) - 1);
+  topIndex = scrollListBy(downloadTopIndex, 0, visibleRows, static_cast<int>(rowCount()));
   catalogReleasedForDownload = false;
   uiReady = false;
   requestUpdate();

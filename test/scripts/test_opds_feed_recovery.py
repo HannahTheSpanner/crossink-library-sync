@@ -100,9 +100,17 @@ struct HttpDownloader {
 };
 struct OpdsBookBrowserActivity {
   enum class BrowserState { ERROR, BROWSING };
-  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 3;
+  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 1;
+  static constexpr size_t MAX_LEADING_ROWS = 2;
   std::unique_ptr<OpdsEntry[]> entries;
+  std::array<OpdsEntry, MAX_LEADING_ROWS> leadingRows{};
+  size_t leadingRowCount = 0;
   size_t entryCount = 0;
+  size_t rowCount() const { return leadingRowCount + entryCount; }
+  const OpdsEntry& rowEntry(size_t row) const {
+    return row < leadingRowCount ? leadingRows[row] : entries[row - leadingRowCount];
+  }
+  void addLeadingRow(std::string title, std::string href);
   bool uiReady = true, hasPrevPageRow = false, hasNextPageRow = false, hasSyncRow = false;
   int selectorIndex = 0, topIndex = 0;
   BrowserState state = BrowserState::ERROR;
@@ -132,7 +140,8 @@ struct OpdsBookBrowserActivity {
 '''
 main = r'''
 void assertEmpty(const OpdsBookBrowserActivity& browser) {
-  assert(browser.entryCount == 0);
+  assert(browser.entryCount == 0 && browser.leadingRowCount == 0);
+  for (const auto& row : browser.leadingRows) assert(row.title.empty() && row.href.empty());
   assert(!browser.uiReady && !browser.hasNextPageRow && !browser.hasPrevPageRow && !browser.hasSyncRow);
   for (size_t i = 0; i < browser.OPDS_BROWSER_ENTRY_CAPACITY; ++i) {
     const auto& entry = browser.entries[i];
@@ -174,14 +183,17 @@ int main() {
     browser.fetchFeed("");
     assert(browser.state == OpdsBookBrowserActivity::BrowserState::BROWSING);
     assert(browser.entryCount == browser.OPDS_BROWSER_ENTRY_CAPACITY);
+    assert(browser.rowCount() == browser.OPDS_BROWSER_ENTRY_CAPACITY + 2);
     assert(browser.hasNextPageRow && browser.hasPrevPageRow && browser.hasSyncRow);
-    // Row 0 syncs the catalogue the page belongs to; then previous page, books, next page.
-    assert(browser.entries[0].title == STR_OPDS_SYNC_MISSING);
+    // Row 0 syncs the catalogue the page belongs to; then previous page, books,
+    // next page. The two leading rows sit outside the parsed array.
+    assert(browser.rowEntry(0).title == STR_OPDS_SYNC_MISSING);
     assert(browser.syncFeedUrl == "http://opds.example/recent");
-    assert(browser.entries[2].title == "A recent book with a short title");
-    assert(browser.entries[2].description[0] == 'd');
-    assert(browser.entries[1].href == "/recent?page=0");
-    assert(browser.entries[browser.entryCount - 1].href == "/recent?page=2");
+    assert(browser.rowEntry(1).href == "/recent?page=0");
+    assert(browser.rowEntry(2).title == "A recent book with a short title");
+    assert(browser.rowEntry(2).description[0] == 'd');
+    assert(&browser.rowEntry(2) == &browser.entries[0]);
+    assert(browser.rowEntry(browser.rowCount() - 1).href == "/recent?page=2");
   }
   // Parser errors abort the transport and retain their own error message.
   HttpDownloader::response = "<feed>" + book + "</invalid>" + std::string(10000, 'x');
@@ -227,7 +239,7 @@ int main() {
   browser.fetchFeed("");
   assert(HttpDownloader::requests == 2);
   assert(browser.state == OpdsBookBrowserActivity::BrowserState::BROWSING);
-  assert(browser.entryCount == 2 && browser.hasSyncRow);
+  assert(browser.entryCount == 1 && browser.rowCount() == 2 && browser.hasSyncRow);
   HttpDownloader::status = 200;
   HttpDownloader::outcome = HttpDownloader::OK;
   HttpDownloader::response = full;
@@ -236,15 +248,15 @@ int main() {
   assert(XmlTestHeap::live == 0);
   HttpDownloader::response = R"({"navigation":[{"title":"JSON folder","href":"next"}],"links":[{"rel":"next","href":"page2"}]})";
   browser.fetchFeed("");
-  assert(browser.entryCount == 2 && browser.hasNextPageRow);
-  assert(browser.entries[0].title == "JSON folder");
+  assert(browser.entryCount == 2 && browser.rowCount() == 2 && browser.hasNextPageRow);
+  assert(browser.rowEntry(0).title == "JSON folder");
   HttpDownloader::response = R"({"navigation":[{"title":"Partial JSON folder","href":"next"}],)";
   browser.fetchFeed("");
   assert(browser.errorMessage == STR_PARSE_FEED_FAILED);
   assertEmpty(browser);
   HttpDownloader::response = R"({"navigation":[{"title":"JSON retry","href":"next"}]})";
   browser.fetchFeed("");
-  assert(browser.entryCount == 1 && browser.entries[0].title == "JSON retry");
+  assert(browser.rowCount() == 1 && browser.rowEntry(0).title == "JSON retry");
   assert(!browser.hasSyncRow);
   // A navigation-only root offers to sync its "All Books" catalogue.
   browser.currentPath = "/opds/root.xml";
@@ -252,7 +264,7 @@ int main() {
       "<feed><entry><title>Authors</title><link href='authors' type='application/atom+xml'/></entry>"
       "<entry><title>All Books</title><link href='all?page=1' type='application/atom+xml'/></entry></feed>";
   browser.fetchFeed(browser.currentPath);
-  assert(browser.hasSyncRow && browser.entryCount == 3);
+  assert(browser.hasSyncRow && browser.entryCount == 2 && browser.rowCount() == 3);
   assert(browser.syncFeedTitle == "All Books");
   assert(browser.syncFeedUrl == "http://opds.example/opds/all?page=1");
   // OPDS 2 group previews are not a catalogue; the "All books" link is.
@@ -305,6 +317,7 @@ with tempfile.TemporaryDirectory(prefix="crossink-opds-recovery-") as temp:
         "bool OpdsBookBrowserActivity::ensureEntryBuffer(",
         "void OpdsBookBrowserActivity::clearEntries(",
         "bool OpdsBookBrowserActivity::appendEntry(",
+        "void OpdsBookBrowserActivity::addLeadingRow(",
     )) + main)
     flags = ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g",
              "-DXML_CONTEXT_BYTES=0", "-DXML_GE=0"]

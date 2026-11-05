@@ -65,16 +65,34 @@ class OpdsBookBrowserActivity final : public Activity {
   BrowserState state = BrowserState::LOADING;
   ScreenTransitionRefresh screenTransitionRefresh;
   std::unique_ptr<OpdsEntry[]> entries;
-  // Parsed entries plus the synthetic sync, previous-page and next-page rows.
-  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 3;
+  // Parsed entries plus the synthetic next-page row, which is appended.
+  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 1;
+  // The list shows up to two synthetic rows before the parsed entries: "Sync
+  // missing books" and the previous-page link. They live here rather than in
+  // the array, so inserting them never moves the parsed entries (each is
+  // ~400 bytes, 50 of them per page), and the array keeps the parser's layout.
+  static constexpr size_t MAX_LEADING_ROWS = 2;
+  static constexpr size_t OPDS_BROWSER_ROW_CAPACITY = OPDS_BROWSER_ENTRY_CAPACITY + MAX_LEADING_ROWS;
+  std::array<OpdsEntry, MAX_LEADING_ROWS> leadingRows{};
+  size_t leadingRowCount = 0;
   // 848 bytes owned by this activity; reused each render rather than allocated on the task stack.
-  std::array<std::array<char, 16>, OPDS_BROWSER_ENTRY_CAPACITY> countLabels{};
+  std::array<std::array<char, 16>, OPDS_BROWSER_ROW_CAPACITY> countLabels{};
   size_t entryCount = 0;
   bool hasPrevPageRow = false;
   bool hasNextPageRow = false;
   // Row 0 can be "Sync missing books": bulk-download what syncFeedUrl lists
   // and the card lacks (OpdsLibrarySyncActivity).
   bool hasSyncRow = false;
+  // List rows: the leading rows, then the parsed entries (plus next page).
+  size_t rowCount() const { return leadingRowCount + entryCount; }
+  OpdsEntry& rowEntry(const size_t row) {
+    return row < leadingRowCount ? leadingRows[row] : entries[row - leadingRowCount];
+  }
+  const OpdsEntry& rowEntry(const size_t row) const {
+    return row < leadingRowCount ? leadingRows[row] : entries[row - leadingRowCount];
+  }
+  // Adds a synthetic row before the parsed entries (sync first, then previous page).
+  void addLeadingRow(std::string title, std::string href);
   std::string syncFeedUrl;
   std::string syncFeedTitle;
   // A catalogue's first page and title. Pagination keeps them, so a sync
