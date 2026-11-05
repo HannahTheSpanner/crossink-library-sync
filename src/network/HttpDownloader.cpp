@@ -651,6 +651,18 @@ HttpDownloader::DownloadError HttpDownloader::streamUrl(const std::string& url, 
   return runGet(url, username, password, options.authorizationOrigin, sink, bufferSize, options.transport);
 }
 
+static_assert(HttpDownloader::reservedBytesForFile(0) == 128 * 1024);
+static_assert(HttpDownloader::reservedBytesForFile(1) == 256 * 1024);
+static_assert(HttpDownloader::reservedBytesForFile(128 * 1024) == 256 * 1024);
+static_assert(HttpDownloader::reservedBytesForFile(128 * 1024 + 1) == 384 * 1024);
+static_assert(HttpDownloader::reservedBytesForFile(5'000'000) == 5'111'808 + 128 * 1024);
+
+bool HttpDownloader::isRetryable(const DownloadError result, const int responseStatus) {
+  if (result != HTTP_ERROR) return false;
+  return responseStatus <= 0 || responseStatus == 200 || responseStatus == 206 || responseStatus == 408 ||
+         responseStatus == 429 || responseStatus >= 500;
+}
+
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
@@ -688,6 +700,12 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.cancelFlag = cancelFlag;
   sink.shouldCancel = std::move(options.shouldCancel);
   sink.resumeOffset = resumeOffset;
+  // Only for the final status; never surfaced as feed diagnostics.
+  HttpRequestDiagnostics statusDiagnostics;
+  if (options.responseStatus) {
+    *options.responseStatus = 0;
+    sink.diagnostics = &statusDiagnostics;
+  }
 
   if (options.useServerFilename) {
     sink.prepareDestination = [&](std::string_view disposition) {
@@ -736,27 +754,60 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     };
   }
 
+  [[maybe_unused]] const unsigned long startedMs = millis();
+  // Free space is known before the request is sent, so it never holds up the
+  // response. Counting free clusters walks the card's allocation table (about
+  // 15,000 sectors on a 32 GB FAT32 card) and the SD layer caches the result
+  // for only 20 s. Counted when the body had started arriving, it stalled the
+  // connection once per book in a library sync, and servers or proxies may
+  // drop a stalled connection. A batch passes a running estimate instead.
+  bool haveFreeBytes = false;
+  bool freeBytesEstimated = false;
+  uint64_t freeBytes = 0;
+  auto measureFreeBytes = [&]() {
+#ifndef SIMULATOR
+    // The host storage shim does not expose card capacity, and some SD
+    // transports cannot report it; then a write that does not fit just fails.
+    const uint64_t totalBytes = Storage.totalBytes();
+    if (totalBytes == 0) return false;
+    const unsigned long checkStartedMs = millis();
+    const uint64_t usedBytes = Storage.usedBytes();
+    freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
+    freeBytesEstimated = false;
+    if (options.freeSpaceEstimate) *options.freeSpaceEstimate = freeBytes;
+    const unsigned long checkMs = millis() - checkStartedMs;
+    if (checkMs >= 250) LOG_INF("HTTP", "SD free-space check took %lu ms", checkMs);
+    return true;
+#else
+    return false;
+#endif
+  };
+  if (options.checkFreeSpace) {
+    if (options.freeSpaceEstimate && *options.freeSpaceEstimate > 0) {
+      freeBytes = *options.freeSpaceEstimate;
+      freeBytesEstimated = true;
+      haveFreeBytes = true;
+    } else {
+      haveFreeBytes = measureFreeBytes();
+    }
+  }
+
   FsFile file;
   bool fileOpen = false;
-#ifndef SIMULATOR
   bool spaceChecked = false;
-#endif
   bool insufficientSpace = false;
   auto openOutputFile = [&]() {
     if (fileOpen) return true;
-#ifndef SIMULATOR
-    // The host storage shim does not expose card capacity.
     const size_t requiredTotal = options.expectedBytes ? options.expectedBytes : sink.total;
-    if (options.checkFreeSpace && !spaceChecked && requiredTotal > 0) {
+    if (haveFreeBytes && !spaceChecked && requiredTotal > 0) {
       spaceChecked = true;
-      // Some SD transports cannot report capacity; let the write fail instead.
-      const uint64_t totalBytes = Storage.totalBytes();
-      if (totalBytes > 0 && requiredTotal > sink.resumeOffset) {
-        const uint64_t usedBytes = Storage.usedBytes();
-        const uint64_t freeBytes = totalBytes > usedBytes ? totalBytes - usedBytes : 0;
+      if (requiredTotal > sink.resumeOffset) {
         // Existing destinations remain included in usedBytes: replacement
         // needs space for the entire staged payload beside the old source.
         const uint64_t neededBytes = requiredTotal - sink.resumeOffset;
+        // An estimate errs low, so confirm with a real count before refusing.
+        // This one runs mid-response, but only when the card is nearly full.
+        if (freeBytes < neededBytes && freeBytesEstimated) measureFreeBytes();
         if (freeBytes < neededBytes) {
           LOG_ERR("HTTP", "Insufficient SD space: free=%llu required=%llu", static_cast<unsigned long long>(freeBytes),
                   static_cast<unsigned long long>(neededBytes));
@@ -765,7 +816,6 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
         }
       }
     }
-#endif
     if (sink.resumeOffset > 0) {
       file = Storage.open(writePath.c_str(), O_WRONLY | O_APPEND);
     } else {
@@ -786,6 +836,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   DownloadError result = HTTP_ERROR;
   HttpDownloadResume::RetryBudget budget;
+  const unsigned long transferStartedMs = millis();
   do {
     if (isCancelRequested(sink.cancelFlag, sink.shouldCancel)) {
       result = ABORTED;
@@ -816,9 +867,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
         break;
       }
       sink.downloaded = sink.total = 0;
-#ifndef SIMULATOR
       spaceChecked = false;
-#endif
     }
     if (!budget.again(before, sink.downloaded)) break;
     sink.resumeOffset = sink.downloaded;
@@ -829,11 +878,15 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
       delay(20);
     }
   } while (true);
+  const unsigned long transferMs = millis() - transferStartedMs;
   if (insufficientSpace) result = INSUFFICIENT_SPACE;
+  if (options.responseStatus) *options.responseStatus = statusDiagnostics.status > 0 ? statusDiagnostics.status : 0;
 
   if (result != OK) {
-    LOG_ERR("HTTP", "Transfer failed: error=%d downloaded=%zu expected=%zu preservePartial=%d resumePartial=%d",
-            static_cast<int>(result), sink.downloaded, sink.total, options.preservePartial, options.resumePartial);
+    LOG_ERR("HTTP",
+            "Transfer failed: error=%d downloaded=%zu expected=%zu after %lu ms preservePartial=%d resumePartial=%d",
+            static_cast<int>(result), sink.downloaded, sink.total, transferMs, options.preservePartial,
+            options.resumePartial);
     if (outputPrepared && (result == ABORTED || !options.preservePartial)) {
       Storage.remove(writePath.c_str());
     }
@@ -858,12 +911,28 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
 
   if ((options.validate && !options.validate(writePath)) ||
       (options.validateWithContext && !options.validateWithContext(writePath, options.validationContext))) {
-    LOG_ERR("HTTP", "Downloaded file failed validation: %s", writePath.c_str());
+    // expected=0 means the server sent no Content-Length, so a connection cut
+    // short looks complete until this check; a full-length file that fails
+    // means the copy on the server is itself damaged.
+    LOG_ERR("HTTP", "Downloaded file failed validation: %s (%zu bytes, expected %zu, transfer %lu ms)",
+            writePath.c_str(), sink.downloaded, sink.total, transferMs);
     Storage.remove(writePath.c_str());
     return HTTP_ERROR;
   }
 
   if (options.stageAsPart && !DownloadFileSwap::publish(destination, options.requireBackupCleanup)) return FILE_ERROR;
 
+  if (options.freeSpaceEstimate && *options.freeSpaceEstimate > 0) {
+    // Reaching 0 makes the next download measure again.
+    const uint64_t reserved = reservedBytesForFile(sink.downloaded);
+    *options.freeSpaceEstimate = *options.freeSpaceEstimate > reserved ? *options.freeSpaceEstimate - reserved : 0;
+  }
+
+  // Transfer covers connect, TLS handshake and the body; total adds the
+  // free-space check, flushing the file and validation.
+  [[maybe_unused]] const unsigned long transferKBps =
+      transferMs > 0 ? static_cast<unsigned long>(static_cast<uint64_t>(sink.downloaded) / transferMs) : 0;
+  LOG_INF("HTTP", "Downloaded %zu bytes: transfer %lu ms (%lu KB/s), total %lu ms", sink.downloaded, transferMs,
+          transferKBps, millis() - startedMs);
   return OK;
 }

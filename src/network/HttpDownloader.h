@@ -102,7 +102,37 @@ class HttpDownloader {
     std::string_view overwriteApprovedPath;
     // Receives the chosen path, including when FILE_EXISTS requests approval.
     std::string* resolvedPath = nullptr;
+    // For a batch of downloads (library sync): a running estimate of free SD
+    // space shared across them, so each download does not recount free
+    // clusters. On a 32 GB FAT32 card that count reads ~15,000 sectors.
+    // 0 means unknown, and the next download measures it. A successful
+    // download lowers the estimate by the file size rounded up generously
+    // (see reservedBytesForFile). When the estimate says a file may not fit,
+    // the space is measured again before giving up. Used with checkFreeSpace.
+    uint64_t* freeSpaceEstimate = nullptr;
+    // downloadToFile only (streamUrl reports through HttpRequestDiagnostics):
+    // receives the final HTTP status, 0 when no response arrived (connect,
+    // TLS, or transport failure), otherwise the status code, which is 200 for
+    // a body that was cut short. Lets callers retry transient failures
+    // without retrying a definitive answer such as 401 or 404.
+    int* responseStatus = nullptr;
   };
+
+  // True for failures worth retrying: no response, a body cut short, or a
+  // server-side/temporary status (408, 429, 5xx). Client errors, a full SD
+  // card, file errors and cancellation are definitive.
+  static bool isRetryable(DownloadError result, int responseStatus);
+
+  // Space a downloaded file is assumed to take when updating a free-space
+  // estimate: its size rounded up to 128 KiB, the largest cluster size SD
+  // cards normally use, plus 128 KiB for directory entries and the small
+  // files a sync writes alongside it. Overestimating only means an early
+  // re-measure near a full card; underestimating could start a download
+  // that cannot fit.
+  static constexpr uint64_t FREE_SPACE_ROUNDING = 128 * 1024;
+  static constexpr uint64_t reservedBytesForFile(const uint64_t fileBytes) {
+    return (fileBytes + FREE_SPACE_ROUNDING - 1) / FREE_SPACE_ROUNDING * FREE_SPACE_ROUNDING + FREE_SPACE_ROUNDING;
+  }
 
   /**
    * Fetch text content from a URL with optional credentials.

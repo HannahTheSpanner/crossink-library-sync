@@ -694,6 +694,52 @@ TEST_P(HttpDownloaderTest, UnknownCapacityFallsBackToSdWriteError) {
   EXPECT_FALSE(files.count("/book.part"));
 }
 
+// Library sync passes one running free-space estimate across a batch of books
+// so the slow free-cluster count runs once, before the first request.
+TEST_P(HttpDownloaderTest, FreeSpaceEstimateSkipsRecountsAndShrinksPerBook) {
+  HttpDownloader::DownloadOptions options;
+  options.transport = GetParam();
+  options.stageAsPart = options.checkFreeSpace = true;
+  uint64_t estimate = 0;
+  options.freeSpaceEstimate = &estimate;
+  cardCapacity = 10'000'000;
+  cardUsedBytes = 1'000'000;
+  replies = {{200, "abc", 3}, {200, "def", 3}};
+  ASSERT_EQ(HttpDownloader::downloadToFile("https://example.com/a", "/a", nullptr, nullptr, "", "", options),
+            HttpDownloader::OK);
+  EXPECT_EQ(capacityChecks, 1u);
+  EXPECT_EQ(estimate, 9'000'000u - HttpDownloader::reservedBytesForFile(3));
+  ASSERT_EQ(HttpDownloader::downloadToFile("https://example.com/b", "/b", nullptr, nullptr, "", "", options),
+            HttpDownloader::OK);
+  EXPECT_EQ(capacityChecks, 1u);  // the second book used the estimate
+  EXPECT_EQ(estimate, 9'000'000u - 2 * HttpDownloader::reservedBytesForFile(3));
+  EXPECT_EQ(files["/b"], "def");
+}
+
+TEST_P(HttpDownloaderTest, LowFreeSpaceEstimateIsRemeasuredBeforeRefusing) {
+  HttpDownloader::DownloadOptions options;
+  options.transport = GetParam();
+  options.stageAsPart = options.checkFreeSpace = true;
+  uint64_t estimate = 2;  // errs low: the card really has room
+  options.freeSpaceEstimate = &estimate;
+  cardCapacity = 100;
+  cardUsedBytes = 10;
+  replies = {{200, "abcdef", 6}};
+  ASSERT_EQ(HttpDownloader::downloadToFile("https://example.com/a", "/a", nullptr, nullptr, "", "", options),
+            HttpDownloader::OK);
+  EXPECT_EQ(capacityChecks, 1u);
+  EXPECT_EQ(estimate, 0u);  // 90 measured, less a 256 KiB reservation: measure again next time
+
+  estimate = 2;
+  cardUsedBytes = 98;  // now it really does not fit
+  replies = {{200, "abcdef", 6}};
+  nextReply = 0;
+  EXPECT_EQ(HttpDownloader::downloadToFile("https://example.com/b", "/b", nullptr, nullptr, "", "", options),
+            HttpDownloader::INSUFFICIENT_SPACE);
+  EXPECT_EQ(capacityChecks, 2u);
+  EXPECT_FALSE(files.count("/b"));
+}
+
 TEST_P(HttpDownloaderTest, UsedCapacityAboveTotalSaturatesWithoutUnsignedWrap) {
   HttpDownloader::DownloadOptions options;
   options.transport = GetParam();
@@ -707,6 +753,36 @@ TEST_P(HttpDownloaderTest, UsedCapacityAboveTotalSaturatesWithoutUnsignedWrap) {
   EXPECT_EQ(fileWriteOpens, 0u);
 }
 #endif
+TEST_P(HttpDownloaderTest, DownloadReportsFinalStatusForRetryDecisions) {
+  HttpDownloader::DownloadOptions options;
+  options.transport = GetParam();
+  options.stageAsPart = true;
+  int status = -1;
+  options.responseStatus = &status;
+  replies = {{503, "busy", 4}};
+  EXPECT_EQ(HttpDownloader::downloadToFile("https://example.com/a", "/a", nullptr, nullptr, "", "", options),
+            HttpDownloader::HTTP_ERROR);
+  EXPECT_EQ(status, 503);
+  EXPECT_TRUE(HttpDownloader::isRetryable(HttpDownloader::HTTP_ERROR, status));
+  replies = {{404, "gone", 4}};
+  nextReply = 0;
+  EXPECT_EQ(HttpDownloader::downloadToFile("https://example.com/a", "/a", nullptr, nullptr, "", "", options),
+            HttpDownloader::HTTP_ERROR);
+  EXPECT_EQ(status, 404);
+  EXPECT_FALSE(HttpDownloader::isRetryable(HttpDownloader::HTTP_ERROR, status));
+  replies = {{200, "abc", 3}};
+  nextReply = 0;
+  EXPECT_EQ(HttpDownloader::downloadToFile("https://example.com/a", "/a", nullptr, nullptr, "", "", options),
+            HttpDownloader::OK);
+  EXPECT_EQ(status, 200);
+  EXPECT_EQ(files["/a"], "abc");
+  // Definitive outcomes are never retried.
+  EXPECT_FALSE(HttpDownloader::isRetryable(HttpDownloader::UNAUTHORIZED, 401));
+  EXPECT_FALSE(HttpDownloader::isRetryable(HttpDownloader::FILE_EXISTS, 200));
+  EXPECT_FALSE(HttpDownloader::isRetryable(HttpDownloader::ABORTED, 0));
+  EXPECT_TRUE(HttpDownloader::isRetryable(HttpDownloader::HTTP_ERROR, 0));
+}
+
 TEST_P(HttpDownloaderTest, FeedDiagnosticsFollowFinalResponseAndAuthorization) {
   for (const auto* destination : {"https://example.com/feed", "https://other.example/feed"}) {
     for (const bool credentials : {false, true}) {
