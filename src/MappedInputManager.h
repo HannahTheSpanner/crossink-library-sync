@@ -178,8 +178,8 @@ class MappedInputManager {
   // Deliver a delayed capacitive Home-key tap through the usual activity route.
   void queueDeferredHomeGesture() { deferredHomeGesture = true; }
   void clearDeferredHomeGesture() const { deferredHomeGesture = false; }
-  // Contextual menu intent: X4 Pro and Picco use the bottom-edge up-swipe;
-  // other boards keep the top-edge down-swipe.
+  // Contextual menu intent: X4 Pro, Picco and the Metalio use the bottom-edge
+  // up-swipe; other boards keep the top-edge down-swipe.
   bool wasMenuGesture() const;
   // Frontlight quick panel: top-edge down-swipe on X4 Pro and Picco.
   bool wasLightPanelGesture() const;

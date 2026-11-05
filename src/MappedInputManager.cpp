@@ -834,9 +834,10 @@ bool MappedInputManager::wasBottomEdgeUpSwipe() const {
   return false;
 }
 
-// Picco shares the X4 Pro drawer layout without pretending to have a Home key.
+// Picco and the Metalio share the X4 Pro drawer layout without pretending to
+// have a Home key: a bottom-edge swipe opens the menu, which carries Home.
 bool MappedInputManager::usesFrontlightSwipeLayout() const {
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_METALIO_EINK4
   return true;
 #else
   return hasHomeKeyHardware();

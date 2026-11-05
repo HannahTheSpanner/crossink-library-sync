@@ -895,7 +895,7 @@ void TxtReaderActivity::renderPage() {
       });
   if (!deferred) {
     auto request = ReaderUtils::PageRefresh::Blocking;
-#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_STICKY
+#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_METALIO_EINK4
     if (SETTINGS.textAntiAliasing) request = ReaderUtils::PageRefresh::GrayscaleBase;
 #endif
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, request);

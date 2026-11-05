@@ -2,5 +2,5 @@
 
 // Releases the ESP32-S3 USB-OTG PHY and reconnects the hardware USB
 // Serial/JTAG peripheral before a normal application restart. No-op on targets
-// other than the USB Drive-capable X4 Pro, X4 Classic, and Picco.
+// without USB Drive (ESP32-S3 boards built with FREEINK_CAP_USB_MSC).
 void handoffUsbOtgToSerialJtag();

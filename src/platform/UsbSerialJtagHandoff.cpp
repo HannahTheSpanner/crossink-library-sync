@@ -4,8 +4,8 @@
 #include <sdkconfig.h>
 #endif
 
-#if defined(ARDUINO_ARCH_ESP32) && CONFIG_IDF_TARGET_ESP32S3 && \
-    (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PICCO) && FREEINK_CAP_USB_MSC
+// Every USB Drive-capable board is an ESP32-S3 whose logs ride USB Serial/JTAG.
+#if defined(ARDUINO_ARCH_ESP32) && CONFIG_IDF_TARGET_ESP32S3 && FREEINK_CAP_USB_MSC
 
 #include <Arduino.h>
 #include <esp_err.h>

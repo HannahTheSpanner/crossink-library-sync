@@ -28,6 +28,8 @@ Welcome to CrossInk, a personal fork of CrossPoint Reader.
 - [Languages](./languages.md)
 - [Plugins](./sd-plugins.md)
 - [BOOX Picco](./picco.md)
+- [Metalio E-Ink 4](./metalio-eink4.md)
+- [EEGO Reader A4](./eego-a4.md)
 - [Web Server Guide](./webserver.md)
 - [Troubleshooting](./troubleshooting.md)
 

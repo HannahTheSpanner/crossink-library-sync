@@ -55,6 +55,8 @@ int main() {
   const ScreenInsets defaults;
 #if defined(FREEINK_DEVICE_STICKY) && FREEINK_DEVICE_STICKY
   assert((defaults.edges == std::array<uint8_t, 4>{{0, 0, 0, 0}}));
+#elif defined(FREEINK_DEVICE_EEGO_A4) && FREEINK_DEVICE_EEGO_A4
+  assert((defaults.edges == std::array<uint8_t, 4>{{24, 8, 16, 8}}));
 #else
   assert((defaults.edges == std::array<uint8_t, 4>{{9, 3, 3, 3}}));
 #endif

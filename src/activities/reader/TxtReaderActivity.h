@@ -134,7 +134,9 @@ class TxtReaderActivity final : public Activity {
   bool isBookReaderActivity() const override { return true; }
   bool usesMenuButtonOrientation() const override { return quickActionsPopup.isActive(); }
   bool usesFullScreenReaderVerticalSwipes() const override {
-#if (defined(FREEINK_DEVICE_STICKY) && FREEINK_DEVICE_STICKY) || (defined(FREEINK_DEVICE_PICCO) && FREEINK_DEVICE_PICCO)
+#if (defined(FREEINK_DEVICE_STICKY) && FREEINK_DEVICE_STICKY) || \
+    (defined(FREEINK_DEVICE_PICCO) && FREEINK_DEVICE_PICCO) ||   \
+    (defined(FREEINK_DEVICE_METALIO_EINK4) && FREEINK_DEVICE_METALIO_EINK4)
     return true;
 #else
     return false;

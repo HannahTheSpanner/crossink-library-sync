@@ -191,7 +191,7 @@ book or image directly from another nearby CrossInk reader without joining a
 Wi-Fi network. See [Nearby File Transfer](./nearby-file-transfer.md) for the
 complete sender and receiver workflow.
 
-On X4 Pro, the screen also includes **USB Drive**. This exposes the reader's SD
+On readers with USB Drive support (X4 Pro, X4 Classic, Picco, Metalio E-Ink 4 and EEGO Reader A4), the screen also includes **USB Drive**. This exposes the reader's SD
 card to a computer over USB for direct file management. See the
 [USB Drive instructions](./installation.md#usb-drive) for the safe-eject and
 disconnect behavior.

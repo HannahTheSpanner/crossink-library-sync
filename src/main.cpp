@@ -1212,6 +1212,14 @@ void setupDisplayAndFonts(const bool seamless, const bool loadReaderResources, c
   display.begin(seamless);
 #endif
   renderer.begin();
+#if FREEINK_DEVICE_EEGO_A4
+  // ScreenInsets' built-in default must stay the SDK's measured allowance.
+  static_assert(ScreenInsets{}.edges[0] == BoardConfig::EEGO_A4.viewableInsets.top &&
+                    ScreenInsets{}.edges[1] == BoardConfig::EEGO_A4.viewableInsets.right &&
+                    ScreenInsets{}.edges[2] == BoardConfig::EEGO_A4.viewableInsets.bottom &&
+                    ScreenInsets{}.edges[3] == BoardConfig::EEGO_A4.viewableInsets.left,
+                "EEGO A4 screen insets differ from the SDK board profile");
+#endif
   renderer.setViewableInsets(HalScreenCalibration::load());
   display.setInverted(SETTINGS.screenInverted != 0);
   // FreeInkUI headers need more than 4 KB once the render loop and nested
@@ -1339,8 +1347,10 @@ void setup() {
   const auto wakeupReason = usbSleepWake ? HalGPIO::WakeupReason::PowerButton : gpio.getWakeupReason();
 #ifndef SIMULATOR
   const bool shortPressWakes = readWakeShortPressFromNvs();
+  // The Metalio powers off to sleep and its expander boots it after the button
+  // is released, so a hold check there would send every power-on back to sleep.
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !usbSleepWake &&
-      !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected()) &&
+      !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected()) && !BoardConfig::isMetalioEInk4() &&
       !gpio.verifyPowerButtonWakeup(shortPressWakes, CrossPointSettings::POWER_BUTTON_LONG_PRESS_MS)) {
     LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
     powerManager.startDeepSleep(gpio);
