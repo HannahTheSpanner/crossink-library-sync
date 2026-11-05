@@ -3,6 +3,7 @@
 
 #include <Logging.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -66,6 +67,15 @@ OpdsJsonParser::OpdsJsonParser(OpdsEntry* buffer, size_t capacity, bool publicat
   entryLimit = std::min(capacity, MAX_OPDS_FEED_ENTRIES);
   publicationDocument = publication;
   if (!entries || entryLimit == 0) errorOccured = true;
+}
+
+OpdsJsonParser::OpdsJsonParser(const OpdsEntrySink sink, void* sinkContext)
+    : parser(JsonCallbacks{this, &sOnKey, &sOnString, &sOnNumber, &sOnBool, nullptr, &sOnObjectStart, &sOnObjectEnd,
+                           &sOnArrayStart, &sOnArrayEnd, &sOnStringPrefix}),
+      sink(sink),
+      sinkContext(sinkContext) {
+  entryLimit = SIZE_MAX;
+  if (!sink) errorOccured = true;
 }
 
 void OpdsJsonParser::setPreferredLanguage(const char* lang) {
@@ -519,16 +529,30 @@ void OpdsJsonParser::commitPubLink() {
   currentEntry.unsupportedAcquisition = unsupported;
 }
 void OpdsJsonParser::commitPublication() {
+  // Grouped publications (stack ... GROUP > PUBS > [PUB just popped]) are a
+  // preview: keep only the first MAX_GROUP_PREVIEW so a large group doesn't
+  // starve the rest. Top-level (flat-feed) publications are not capped.
+  const bool inGroup = depth >= 2 && stack[depth - 2] == Scope::GROUP;
+  if (sink && !currentEntry.title.empty()) {
+    // Streaming (library sync): a group preview lists a few books of the
+    // group's own feed, so it is not part of this page's catalogue. Every
+    // other titled publication counts as seen, so ones without a usable
+    // acquisition (PDF only, buy or LCP links) can be reported.
+    if (inGroup) {
+      sawGroupedPublication = true;
+      return;
+    }
+    ++publicationsSeen;
+    if (currentEntry.unsupportedAcquisition) return;
+  }
   // A publication is listable if it has a title and either a download href or a
   // self (detail-page) link. Shop entries often carry only a self link plus a
   // non-downloadable buy link; they still browse to their detail page.
   if (currentEntry.title.empty() ||
       (currentEntry.href.empty() && currentEntry.selfHref.empty() && !publicationDocument))
     return;
-  // Grouped publications (stack ... GROUP > PUBS > [PUB just popped]) are a
-  // preview: keep only the first MAX_GROUP_PREVIEW so a large group doesn't
-  // starve the rest. Top-level (flat-feed) publications are not capped.
-  if (depth >= 2 && stack[depth - 2] == Scope::GROUP && ++groupPubCount > MAX_GROUP_PREVIEW) return;
+  if (inGroup) sawGroupedPublication = true;
+  if (inGroup && ++groupPubCount > MAX_GROUP_PREVIEW) return;
   if (entryCount >= entryLimit) {
     feedTruncated = true;
     return;

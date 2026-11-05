@@ -35,9 +35,10 @@ size_t OpdsFeedParser::write(const uint8_t* bytes, size_t length) {
       continue;
     }
     if (byte == '<')
-      xml = makeUniqueNoThrow<OpdsParser>(entries, capacity);
+      xml = sink ? makeUniqueNoThrow<OpdsParser>(sink, sinkContext) : makeUniqueNoThrow<OpdsParser>(entries, capacity);
     else if (byte == '{') {
-      json = makeUniqueNoThrow<OpdsJsonParser>(entries, capacity);
+      json = sink ? makeUniqueNoThrow<OpdsJsonParser>(sink, sinkContext)
+                  : makeUniqueNoThrow<OpdsJsonParser>(entries, capacity);
       if (json) json->setPreferredLanguage(language);
     } else {
       failure = OpdsParserError::INVALID_INPUT;
@@ -65,6 +66,7 @@ void OpdsFeedParser::flush() {
 OpdsParserError OpdsFeedParser::getErrorReason() const {
   if (failure != OpdsParserError::NONE) return failure;
   if (xml) return xml->getErrorReason();
+  if (json && json->sinkAborted()) return OpdsParserError::SINK_ABORTED;
   return json && json->error() ? OpdsParserError::INVALID_INPUT : OpdsParserError::NONE;
 }
 

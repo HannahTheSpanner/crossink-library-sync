@@ -13,6 +13,11 @@
 class OpdsJsonParser final : public Print {
  public:
   OpdsJsonParser(OpdsEntry* buffer, size_t capacity, bool publication = false);
+  // Streaming mode (library sync): each top-level publication and navigation
+  // row goes to `sink` instead of the bounded array, so a page of any length
+  // parses in constant memory. Grouped publications are previews of a group's
+  // own feed and are not delivered; grouped() reports that they were skipped.
+  OpdsJsonParser(OpdsEntrySink sink, void* sinkContext);
 
   OpdsJsonParser(const OpdsJsonParser&) = delete;
   OpdsJsonParser& operator=(const OpdsJsonParser&) = delete;
@@ -28,6 +33,13 @@ class OpdsJsonParser final : public Print {
 
   bool error() const;
   bool truncated() const { return feedTruncated; }
+  // True when a sink stopped the parse (see OpdsParserError::SINK_ABORTED).
+  bool sinkAborted() const { return sinkStopped; }
+  // True when the feed held publications inside groups (previews).
+  bool grouped() const { return sawGroupedPublication; }
+  // Publications with a title, delivered or not (streaming mode counts ones
+  // without a usable acquisition too), so a caller can report unusable rows.
+  size_t getEntriesSeen() const { return publicationsSeen; }
 
   size_t getEntryCount() const { return entryCount; }
   const std::string& getFeedTitle() const { return feedTitle; }
@@ -141,11 +153,25 @@ class OpdsJsonParser final : public Print {
   size_t entryCount = 0;
   size_t entryLimit = 0;
   bool publicationDocument = false;
+  OpdsEntrySink sink = nullptr;
+  void* sinkContext = nullptr;
+  bool sinkStopped = false;
+  bool sawGroupedPublication = false;
+  size_t publicationsSeen = 0;
   // Entries live in the caller array; cap their variable strings as well so
   // optional publication URLs cannot consume the C3 heap during TLS parsing.
   static constexpr size_t MAX_ENTRY_STRING_BYTES = 24 * 1024;
   size_t entryStringBytes = 0;
   void append(OpdsEntry&& entry) {
+    if (sink) {
+      // Nothing is retained, so the string budget below does not apply.
+      if (!sinkStopped && !sink(sinkContext, entry)) {
+        sinkStopped = true;
+        errorOccured = true;
+      }
+      ++entryCount;
+      return;
+    }
     const size_t bytes =
         entry.title.size() + entry.author.size() + entry.href.size() + entry.id.size() + entry.selfHref.size();
     if (bytes > MAX_ENTRY_STRING_BYTES - entryStringBytes) {
