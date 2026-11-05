@@ -196,12 +196,13 @@ bool OpdsParser::error() const { return errorOccured; }
 void OpdsParser::clear() {
   entryCount = 0;
   entriesSeen = 0;
+  navigationEntriesSeen = 0;
   sinkStopped = false;
   truncated = false;
   searchTemplate.clear();
   nextPageUrl.clear();
   prevPageUrl.clear();
-  currentEntry = OpdsEntry{};
+  currentEntry.reset();
   currentText.clear();
   inEntry = inTitle = inAuthor = inAuthorName = inId = inSummary = false;
   summaryIsContent = descriptionMarkup = descriptionIsHtml = collectDescription = false;
@@ -316,7 +317,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     self->inEntry = true;
-    self->currentEntry = OpdsEntry{};
+    self->currentEntry.reset();
     self->inTitle = self->inAuthor = self->inAuthorName = self->inId = false;
     return;
   }
@@ -371,6 +372,11 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     ++self->entriesSeen;
+    // A link to another feed, usable or not; a book that lost its link stays a
+    // "book" so the page's unusable count still describes books.
+    if (self->currentEntry.type == OpdsEntryType::NAVIGATION && !self->currentEntry.href.empty()) {
+      ++self->navigationEntriesSeen;
+    }
     if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
       if (self->currentEntry.type != OpdsEntryType::NAVIGATION)
         self->currentEntry.count = -1;
@@ -385,7 +391,7 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
           self->errorReason = OpdsParserError::SINK_ABORTED;
           XML_StopParser(self->parser, XML_FALSE);
         }
-        self->currentEntry = OpdsEntry{};
+        self->currentEntry.reset();
       } else if (self->entryCount < self->entryCapacity) {
         self->entries[self->entryCount++] = std::move(self->currentEntry);
       } else {

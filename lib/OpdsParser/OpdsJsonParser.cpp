@@ -287,7 +287,7 @@ void OpdsJsonParser::onContainerStart(const bool isObject) {
       resetLink();
       break;
     case Scope::PUB:
-      currentEntry = OpdsEntry{};
+      currentEntry.reset();
       currentLcp = false;
       pubAcqRank = -1;
       pubHasPlainEpub = false;
@@ -559,7 +559,7 @@ void OpdsJsonParser::commitPublication() {
   }
   currentEntry.type = OpdsEntryType::BOOK;
   append(std::move(currentEntry));
-  currentEntry = OpdsEntry{};
+  currentEntry.reset();
 }
 
 // ---- static callbacks ----
