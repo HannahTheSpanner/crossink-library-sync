@@ -10,6 +10,9 @@ nav_order: 2
 - Xteink X3 and X4
 - Xteink X4 Classic and X4 Pro
 - Seeed Studio Sticky
+- BOOX Picco (see [BOOX Picco](./picco.md))
+- Metalio E-Ink 4 and EEGO Reader A4 (USB install only; see
+  [Metalio E-Ink 4](./metalio-eink4.md) and [EEGO Reader A4](./eego-a4.md))
 
 Don't have a device yet? Get one directly from [Xteink](https://go.sjv.io/X4RGBb) or [Seeed Studio](https://www.seeedstudio.com/reTerminal-Sticky-p-6861.html?sensecap_affiliate=1Nxo3Gw&referring_service=link).
 
@@ -37,7 +40,7 @@ Keep the reader connected until Inky says it is finished. Some devices need to b
 
 ## USB Drive
 
-On the X4 Classic and X4 Pro, you can plug the reader into your computer and use its SD card like a USB stick. This is handy for copying books and fonts.
+On the X4 Classic, X4 Pro, Picco, Metalio E-Ink 4 and EEGO Reader A4, you can plug the reader into your computer and use its SD card like a USB stick. This is handy for copying books and fonts.
 
 1. On the reader, go to **Home > File Transfer > USB Drive**.
 2. Connect the reader to your computer with a USB-C cable.

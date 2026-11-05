@@ -2,7 +2,7 @@
 
 This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my preferred of the popular forks of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), the open firmware for Xteink e-readers.
 
-It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4, and one extra reader font, EB Garamond. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, the other fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
+It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4, and one extra reader font, EB Garamond. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco, plus two readers that CrossPoint supports and CrossInk does not yet: the Metalio E-Ink 4 and the EEGO Reader A4. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, the other fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
 > **A note on credit.** I take no credit for the work in this fork. Claude, Anthropic’s AI model, wrote the code, chased down the bugs and wrote these docs. My role was project management in the loosest possible sense: describing what I wanted, plugging in a USB cable, pasting serial logs, and announcing “it still doesn’t work” with the confidence of someone who could not have fixed it herself.
 >
@@ -94,10 +94,19 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
 
 [EB Garamond](https://github.com/octaviopardo/EBGaramond12) by Georg Duffner and Octavio Pardo, a classic old-style serif, is added as a reader font. It is released under the SIL Open Font License 1.1, which is included next to the font files.
 
-- **X4 Classic, X4 Pro, Sticky and Picco:** built in, next to Lexend Deca and Bitter, as a scalable font from 8 to 22 pt. Choose it in **Settings > Reader > Font Options > Font Family** or the reader's font menu.
+- **X4 Classic, X4 Pro, Sticky, Picco, Metalio E-Ink 4 and EEGO Reader A4:** built in, next to Lexend Deca and Bitter, as a scalable font from 8 to 22 pt. Choose it in **Settings > Reader > Font Options > Font Family** or the reader's font menu.
 - **X3 and X4:** not built in. These readers have no scalable fonts, and EB Garamond's pre-rendered sizes do not fit in their firmware partition next to CrossInk v2.0.0. Each release instead includes `EB-Garamond-SD-font.zip`: unzip it and copy the `EB Garamond` folder to `/.fonts/` on the SD card. It then appears in the font list like any SD font, in sizes from 8 to 20 pt.
 
 Regular and italic text use EB Garamond's Medium weight, which holds up better on e-ink than the thinner Regular (Bitter's built-in copy does the same). Both copies cover Latin, Greek and Cyrillic.
+
+### 6. Metalio E-Ink 4 and EEGO Reader A4
+
+CrossPoint builds for these two ESP32-S3 readers; CrossInk does not. The hardware support (board profile, display, touch, battery, power) lives in the FreeInk SDK that CrossInk already pins, so this fork adds the build environments and the small amount of app-side behaviour CrossPoint has for them:
+
+- **Metalio:** page buttons behind an I2C expander (polled, as they raise no GPIO interrupt), Picco-style touch gestures, power-off instead of deep sleep (the board cannot sleep with its modem powered), and the panel's full clearing waveform for sleep images.
+- **EEGO A4:** the bezel allowances measured by the SDK as the Screen Calibration default, the frontlight turned off and the touch controller parked before deep sleep, and USB Drive over the SPI SD card.
+
+Both get a `-full.bin` image in each release for a first install with esptool, since no browser installer lists them. The SDK marks both boards' hardware validation as incomplete, and this fork has not been run on either device, so treat them as test builds. See [docs/metalio-eink4.md](./docs/metalio-eink4.md) and [docs/eego-a4.md](./docs/eego-a4.md).
 
 ## Credit: Library Sync for KOReader
 
@@ -133,16 +142,20 @@ KOReader devices have hundreds of megabytes of RAM, so the plugin can hold a who
 | Xteink X4 Pro | `firmware-x4-pro.bin` |
 | Seeed reTerminal Sticky | `firmware-sticky.bin` |
 | BOOX Picco | `firmware-picco.bin` |
+| Metalio E-Ink 4 | `firmware-metalio-eink4.bin` (`-full.bin` for a first install) |
+| EEGO Reader A4 | `firmware-eego-a4.bin` (`-full.bin` for a first install) |
 
 Download from [Releases](https://github.com/HannahTheSpanner/crossink-library-sync/releases). To install on an Xteink or the Sticky, copy the file to the SD card, then on the device open **Settings > System > SD Card Firmware Update** and select it. USB flashing is covered in [docs/installation.md](./docs/installation.md).
 
 The BOOX Picco is different: `firmware-picco.bin` is an image for its `app` slot only, and it must be installed with a USB installer that explicitly supports the Picco, without erasing the device, so its recovery software stays intact. SD-card and Wi-Fi updates are not available on the Picco. See [docs/picco.md](./docs/picco.md).
 
+The Metalio E-Ink 4 and EEGO Reader A4 have no browser installer: write the `-full.bin` image with esptool for a first install (`esptool --chip esp32s3 --port <port> write-flash 0x0 firmware-<device>-full.bin`), after which SD-card updates work. See [docs/metalio-eink4.md](./docs/metalio-eink4.md) and [docs/eego-a4.md](./docs/eego-a4.md).
+
 Installing an official CrossInk update over the air replaces this fork with upstream CrossInk.
 
 ## Building
 
-GitHub Actions builds all five firmware files on every push, and runs the OPDS, TLS and download host tests. To build locally, use PlatformIO as described in CrossInk's [Getting Started](./docs/development/getting-started.md) guide:
+GitHub Actions builds all seven firmware files on every push, and runs the OPDS, TLS and download host tests. To build locally, use PlatformIO as described in CrossInk's [Getting Started](./docs/development/getting-started.md) guide:
 
 ```sh
 git submodule update --init --recursive
@@ -151,6 +164,8 @@ pio run -e x4-classic   # X4 Classic
 pio run -e x4-pro       # X4 Pro
 pio run -e sticky       # reTerminal Sticky
 pio run -e picco        # BOOX Picco
+pio run -e metalio-eink4  # Metalio E-Ink 4 (also writes firmware-metalio-eink4-full.bin)
+pio run -e eego-a4        # EEGO Reader A4 (also writes firmware-eego-a4-full.bin)
 ```
 
 Host tests for this fork's changes:
