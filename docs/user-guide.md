@@ -430,6 +430,29 @@ The OPDS Browser supports browsing, searching, and downloading from compatible
 online catalogs. Some catalogs require an account. Buying books and signing in
 through services that need a separate approval flow are not supported here.
 
+##### Syncing missing books
+
+The OPDS Browser (in **File Transfer**) can download every book in a catalog that is not already on the device, in one go. This mirrors the "Sync missing books" action of KOReader's [Library Sync plugin](https://github.com/komadorirobin/library-sync.koplugin). It works with both OPDS 1 (Atom) and OPDS 2 (JSON) catalogs.
+
+- On a server's top level, **Sync missing books** appears as the first row when the catalog has an "All Books" (or "Catalog") entry, and syncs that whole catalog. Grimmory and BookOrbit both provide one.
+- Inside any catalog that lists books (a shelf, a series, a search result), the first row syncs that catalog instead. All of its pages are checked, even if you are viewing a later page. An OPDS 2 page whose books are only previews of its groups offers its "All Books" entry instead, if it has one.
+
+A sync runs in three steps:
+
+1. **Check this device.** The card is scanned for EPUB files. A catalog book counts as already present when a local file carries any name a downloader would give it (`Author - Title`, `Title - Author`, `Last, First - Title`, `Title, The - Author`, the bare title, or the server's own file name from its link), compared without regard to case, accents or punctuation. Books the Library index knows by EPUB title and author also count, as do books an earlier sync downloaded from the same server, even if they were renamed on the server since.
+2. **Check the catalog.** Every page of the catalog is fetched. If any page cannot be read after three attempts, the sync stops before downloading anything. Entries without an EPUB link (for example PDF-only books, or OPDS 2 books that must be bought or need LCP) are counted and skipped.
+3. **Download.** After you confirm the count, missing books are saved exactly as the browser would save them: to the server's **Download Folder**, named with its **Filename** format, or with the server's own file name when **Use Server Filename** is on. OPDS 2 books that link to a publication page rather than the EPUB are resolved first, as the browser does. One failed book does not stop the rest; the sync stops early only if you cancel or the SD card is full.
+
+Nothing is ever replaced or deleted. With **Use Server Filename** on, a book whose server file name is already on the card is counted as already present and skipped. Deleting a synced book from the device means the next sync downloads it again.
+
+##### HTTPS servers and memory (X3 and X4)
+
+HTTPS sends data in records of up to 16 KB, and the reader has to hold a whole record in one block of memory before it can decrypt it. The X3 and X4 have no PSRAM, so when the OPDS Browser opens they set aside one record-sized buffer before WiFi starts, and they ask the server for 2 KB records. If the server agrees, the buffer is handed back straight away; the serial log then shows `Server accepted 2048-byte TLS records`. Otherwise book downloads, which keep one full-record buffer for the whole transfer, use the buffer that was set aside. Either way, large book lists and EPUB downloads load the same as small pages.
+
+Sync missing books needs more memory than browsing, because it keeps its list of the books on the card while it reads each catalog page. When you start it, the browser frees the page it was showing and loads it again when the sync screen closes. The serial log shows the free memory before each catalog page (`[OSY] Page 1 attempt 1: heap free=... largest=...`). A sync that still runs out shows "Memory error" instead of "Failed to fetch feed".
+
+Brief connection failures and server errors are retried automatically before an error is shown: catalog pages up to three times, downloads twice. A failed download shows the server's HTTP status when there was one (`HTTP 404` means the book no longer exists, `HTTP 5xx` a problem on the server); **Retry** downloads that book again and **Back** returns to its catalog page.
+
 #### 3.6.6 Web Settings (Wi-Fi + OPDS)
 
 While in **File Transfer** mode, the web settings page includes management cards for both **Wi-Fi Networks** and **OPDS Servers**.

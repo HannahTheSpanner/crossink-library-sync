@@ -1,3 +1,39 @@
+## [v2.0.0-library-sync.1] - 2026-11-05
+
+This fork is now based on CrossInk v2.0.0 (its release candidate of 2026-11-04). Everything in CrossInk's v2.0.0 notes below applies, including OPDS 2 catalogs, per-server download folders, Use Server Filename, book description previews, and the OPDS Browser's move into File Transfer.
+
+### Added
+
+- Firmware for the Seeed reTerminal Sticky and the BOOX Picco, alongside the Xteink X3/X4, X4 Classic and X4 Pro.
+- Sync missing books works with OPDS 2 (JSON) catalogs as well as OPDS 1 (Atom). OPDS 2 books that link to a publication page rather than the EPUB are resolved before downloading, as the browser does; books that must be bought or need LCP are counted and skipped. On an OPDS 2 page whose books are only previews of its groups, the sync row offers the page's "All Books" catalog instead of the previews.
+
+### Changed
+
+- Sync missing books saves each book exactly where and as the OPDS Browser would: in the server's own Download Folder (or the shared default), and with the server's file name when Use Server Filename is on. A server-named file that is already on the card counts as already present and is never replaced.
+- Sync missing books resolves relative catalog links (such as a next page of `?page=2`) the same way the browser now does.
+- A catalog page that cannot be read during a sync reports the browser's clearer reasons: login rejected, credentials withheld after a redirect, server error, or server unreachable.
+- Sync downloads keep one full-record TLS buffer for each book, as browser downloads do in v2.0.0. On the X3 and X4 it uses the buffer set aside when the OPDS Browser opens.
+- OPDS catalog pages are parsed in CrossInk's 1 KB slices again (this fork used 512 bytes). v2.0.0's parser settings already keep 1 KB slices within expat's 2 KB buffer, and `test/opds_parser_memory` now checks that with the device's settings.
+
+## [v1.6.1-library-sync.4] - 2026-10-17
+
+CrossInk v1.6.1 with OPDS library sync.
+
+### Added
+
+- Sync missing books from an OPDS catalog: the OPDS browser can check a whole catalog (or the server's "All Books" catalog) against the books on the device and download every EPUB that is missing, ported from KOReader's Library Sync plugin. Books already on the device are recognized by file name, Library metadata, or an earlier sync, and nothing is replaced or deleted.
+
+### Fixed
+
+- OPDS book lists and book downloads over HTTPS no longer fail with "Failed to fetch feed" or "Download failed" on the X3 and X4. Servers send HTTPS data in records of up to 16 KB, and the reader ran out of contiguous memory to hold one once WiFi was running. The reader now asks servers for 2 KB records, and on boards without PSRAM it sets aside one record-sized buffer when the OPDS browser opens, returning it if the server accepts small records.
+- Retry after a failed OPDS download retries that download instead of reloading the catalog page, and Back returns to the book list.
+- OPDS catalog pages and downloads retry brief connection failures automatically, and OPDS errors show the server's HTTP status (for example "HTTP 401" for a rejected login).
+- Sync missing books no longer runs out of memory on the X3 and X4. It failed with "Failed to fetch feed" on the first catalog page, or stopped at "Page 0" when started from a book list. The browser now frees the page it was showing while the sync runs (and reloads it afterwards), the catalog parser no longer needs a 4 KB block partway through a page, and a page that runs out of memory is retried and reported as "Memory error".
+- Sync missing books no longer stalls before each book on large FAT32 cards (most noticeable on the X4 Pro). Every download counted the card's free space, which reads the whole allocation table, and did so after the server had started sending the book; on a 32 GB card that held each download up and could make the server drop the connection. Free space is now counted before the request, and a sync counts it once and keeps a running estimate.
+- OPDS downloads refresh their progress at most every 10 seconds instead of every 5%. Each refresh held the download up for about half a second, which on the X4 Pro added about 12 seconds to every book.
+
+## [v1.6.1] - 2026-10-03
+
 ## [v2.0.0] - 2026-11-04
 
 ### Added

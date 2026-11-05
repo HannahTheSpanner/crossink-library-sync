@@ -1,178 +1,172 @@
-> **This is a personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)** with a focus on improved fonts and minimal reading stats.
+# CrossInk Library Sync
 
-### Supported Devices
+This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my preferred of the popular forks of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), the open firmware for Xteink e-readers.
 
-- Xteink X3
-- Xteink X4
-- Xteink X4 Pro
-- Xteink X4 Classic
-- Seeed Studio Sticky
+It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
-## What's different in this fork
+> **A note on credit.** I take no credit for the work in this fork. Claude, Anthropic’s AI model, wrote the code, chased down the bugs and wrote these docs. My role was project management in the loosest possible sense: describing what I wanted, plugging in a USB cable, pasting serial logs, and announcing “it still doesn’t work” with the confidence of someone who could not have fixed it herself.
+>
+> Everything here sits on firmware that people designed, wrote, debugged and still maintain by hand, for a device with a few hundred kilobytes of memory. That takes real skill and a lot of hard work, and none of this fork would exist without it. If this fork is useful to you, please support the humans who did that work: the authors of CrossPoint and CrossInk, listed under [Credits and support](https://github.com/HannahTheSpanner/crossink-library-sync#credits-and-support).
 
-My goal with this fork was to maintain the core Crosspoint firmware while integrating my preferred typography and some lightweight reading statistics. I’ve focused on keeping the underlying system stable while layering in a few "nice-to-have" features and UI refinements along the way.
+## What this fork changes
 
-<table>
-  <tr>
-    <td align="center">
-      <img src="./docs/images/bitter-small-15-margin.jpg" alt="Font: Bitter, Size: 12 pt, Margin: 15" /><br/>
-      <em>Font: Bitter, Size: 12 pt, Margin: 15</em>
-    </td>
-    <td align="center">
-      <img src="./docs/images/reading-stats.jpg" alt="Reading Stats with custom front button mapping shown" /><br/>
-      <em>Reading Stats with custom front button mapping shown</em>
-    </td>
-  </tr>
-</table>
+### 1. Sync missing books from an OPDS catalogue
 
-### Highlights
+CrossInk's OPDS browser (in **File Transfer**) downloads one book at a time. This fork adds a **Sync missing books** row that compares a whole catalogue with the books on the SD card and downloads everything that is missing, in one go. It works with OPDS 1 (Atom) and OPDS 2 (JSON) catalogues.
 
-- Editable SD language files with persistent caching. See [language setup and translation instructions](docs/languages.md).
-- New reader fonts: Lexend Deca and Bitter.
-- Music notation and selected supplemental Unicode glyph support to be able to render Project Hail Mary accurately.
-- Added a custom `Minimal` theme and sleep screen option for the minimalists out there.
-- Added a custom `Dashboard` theme and sleep screen option for reading stats enthusiasts.
-- Reader font sizes: 10 to 16 pt built in on Xteink X3/X4. X4 Classic, X4 Pro, and Sticky use scalable fonts with 1 pt steps from 8 to 22 pt.
-- Added ~~strikethrough~~ support.
-- Made <u>underlines</u> thicker for better visibility.
-- Added support for `<hr>` section breaks.
-- Added support for "redaction" style rendering.
-- Added improved support for tables with simple markup.
-- Added ability to add bookmarks.
-- Added ability to remap front buttons that only applies in the reader.
-- Added Focus Reading and Guide Dots as optional reader modes.
-- Added Force Paragraph Indents for books that render as one giant wall of text.
-- Added ability to pin a sleep image as a favorite. The favorited image will always be displayed when your sleep settings are set to `Custom` or `Cover + Custom` (when no cover is available).
-- Added more in-reader control remapping options for side buttons, short power button clicks, and long-press menu actions, and more.
-- Added ability to mark a book as finished from the in-book menu. A pop-up will also display once 99% of the book is reached. This status allows tracking of total books read.
-- Added ability to move finished books to "Read" folder.
-- In-book menu to quickly adjust reader options without having to exit the book.
-- Reading stats: total books read, total reading time, number of sessions, pages turned, average session time, pages turned per minute. You can also set your reading stats as your sleep screen.
-- All-time reading stats [syncing](./docs/reading-stats-sync.md) between two CrossInk devices.
-- Reading [progress sync](./docs/nearby-position-sync.md) between two CrossInk devices.
-- Added customizable Auto Page Turn Interval (anything between 5-120 seconds).
-- A Library screen that lists every book on the SD card, with search, sorting, and a list or cover grid view for recently opened books.
-- To view a more detailed list for each version, visit the [releases](https://github.com/uxjulia/CrossInk/releases) page to read release notes.
+This would not be possible without the fantastic [Library Sync plugin for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson. The feature is a port of its "Sync missing books" flow; see [Credit: Library Sync for KOReader](#credit-library-sync-for-koreader) for how it was ported.
 
----
+**Where it appears**
 
-### Reader Fonts
+- At a server's top level, when the server has an "All Books" (or "Catalog") entry. Grimmory and BookOrbit both have one.
+- At the top of any catalogue that lists books, such as a shelf, series or search result. It syncs the whole catalogue from its first page, even if you are viewing a later page.
+- An OPDS 2 page whose books are only previews of its groups offers its "All Books" catalogue instead, if it has one.
 
-The default fonts have been replaced with Lexend Deca and Bitter. These fonts have been chosen specifically to improve reading fluency and e-ink performance. These 'sturdier' typefaces feature uniform stroke weights and open geometries, allowing the X4/X3 to render crisp, high-contrast text with font-aliasing on while significantly reducing ghosting and artifacts.
+**How a sync runs**
 
-- [Lexend Deca](https://fonts.google.com/specimen/Lexend+Deca) - A research-backed sans-serif typeface designed to improve reading fluency. Lexend was engineered based on the theory that reading issues are often a design problem (visual crowding) rather than a cognitive one.
-- [Bitter](https://fonts.google.com/specimen/Bitter) - A "contemporary" slab serif typeface for text, it is specially designed for comfortably reading on digital screens. The consistent stroke weight of Bitter helps it render particularly well on e-ink devices. The medium weight has been chosen specifically for improved rendering on the X4/X3.
+1. **Check the device.** The card is scanned for EPUBs, up to six folders deep. A catalogue book counts as present when any of the following is true:
+   - A local file has a name a downloader would give it: `Author - Title`, `Title - Author`, `Last, First - Title`, `Title, The - Author`, the bare title, or the server's own file name. Names are compared without regard to case, accents or punctuation.
+   - CrossInk's Library index has an EPUB with the same title and author.
+   - An earlier sync downloaded it from the same server, even if it has since been renamed on the server.
+2. **Check the catalogue.** Every page is fetched by following its "next" links, up to 200 pages, with loop detection. If any page still can't be read after three attempts, the sync stops before downloading anything, so a partial catalogue is never treated as complete. Entries without an EPUB link (PDF-only books, or OPDS 2 books that must be bought or need LCP) are counted and skipped.
+3. **Confirm, then download.** You see how many books are missing before anything downloads. Books are saved one at a time exactly as the OPDS browser would save them: to the server's Download Folder, with its Filename format, or under the server's own file name when **Use Server Filename** is on. OPDS 2 books that link to a publication page rather than the EPUB are resolved first. One failed book doesn't stop the rest, and you can cancel at any point.
 
-The UI now uses [Inter](https://fonts.google.com/specimen/Inter) as the display font which has improved readability at smaller sizes.
+Nothing is ever replaced or deleted. With Use Server Filename on, a book whose server file name is already on the card counts as present.
 
-### Music and Supplemental Glyphs
+**How it fits in the memory**
 
-- Built-in reader fonts include music notation, selected Cyrillic glyphs, and the Project Hail Mary CJK fallback ranges. Additional SD-card fonts retain emoji fallback support.
+The X3 and X4 have about 380 KB of RAM and no PSRAM, so the sync is designed so its memory use stays flat however large the library is:
 
----
+- Catalogue pages are parsed as a stream, one entry at a time, instead of being loaded whole. Both the Atom and the JSON parser have a streaming mode for this.
+- The queue of missing books is written to the SD card (`/.crosspoint/opds_sync_queue.tsv`), not held in memory.
+- Books on the card are held as a sorted array of 8-byte hashes of their normalised names, so checking a catalogue book is a binary search.
+- Each server has a small ledger on the card (`/.crosspoint/opds_sync_<hash>.txt`) recording the OPDS identity of every book it synced. That is how renamed books are still recognised.
 
-### Font Sizes
+The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-missing-books).
 
-- Xteink X3 and X4: built-in reader font sizes are 10 pt, 12 pt, 14 pt, and 16 pt.
-- X4 Classic, X4 Pro, and Sticky: Lexend Deca and Bitter are scalable, so you can pick any size from 8 pt to 22 pt in 1 pt steps.
+### 2. OPDS over HTTPS on the X3 and X4
 
-See [SD Card Fonts](./docs/sd-card-fonts.md) for installing additional font families and size ranges.
+**Problem.** On the X3 and X4, small OPDS pages loaded, but book lists and downloads from an HTTPS server usually failed with "Failed to fetch feed" or "Download failed". The same server worked every time from KOReader.
 
----
+**Cause.**
+- HTTPS (TLS) sends data in records of up to 16 KB, and the reader has to hold a whole record in one contiguous block of memory (about 16.7 KB) to decrypt it.
+- Once WiFi is running on an X3 or X4, the heap rarely has a free block that large. A serial log showed wolfSSL failing with `MEMORY_E` (-125) partway through a response.
+- The X4 Classic and X4 Pro have PSRAM, so they never hit this.
 
-### Reader features
+**Fix.**
+- **Ask for small records.** The reader asks the server for 2 KB records using the TLS max_fragment_length extension (RFC 6066). If the server agrees, no large buffer is ever needed.
+- **Reserve a buffer for servers that refuse.** Many servers ignore the request. For those, the OPDS browser sets aside one 16.7 KB block as soon as it opens, before WiFi starts and while a block that size is still free.
+  - wolfSSL's allocator is routed through hooks, so its receive buffer borrows that block instead of asking the heap for one.
+  - If the server accepts small records, the block is handed straight back.
+  - Boards with PSRAM skip all of this.
+  - CrossInk v2.0.0 added its own fix for downloads: once a book's request is sent, the connection allocates one full-record receive buffer and keeps it for the whole transfer. On the X3 and X4 that allocation now takes the block set aside at the start, which is still free when the heap no longer has one that large. Catalogue pages, which v2.0.0 does not cover, use the block the same way.
+- **Patch wolfSSL at build time.** `scripts/patch_wolfssl.py` modifies wolfSSL's input-buffer code during the build, so the receive buffer can use the reserved block.
+  - It also reports whether the server accepted small records.
+  - It composes with v2.0.0's own wolfSSL patches, including on a dependency cache patched by an older build of this fork.
+  - The firmware build fails if the patch didn't apply, so a build can't ship without the fix.
+- **Tests.** Host tests cover the reserve (`test/tls_record_reserve`).
 
-Reader Options, Focus Reading, Guide Dots, Force Paragraph Indents, reading stats, and finished-book behavior are documented in [Reader Features](./docs/reader-features.md).
+### 3. Library sync memory on the X3 and X4
 
-### Custom button actions
+**Problem.** With the HTTPS fix in place, single downloads worked, but a sync still failed. From the server's top level it stopped on the first catalogue page with "Failed to fetch feed". Started from a 50-book list, it sat on "Page 0" indefinitely.
 
-CrossInk adds configurable button shortcuts.
+**Cause.** The serial log showed two separate memory shortfalls while a sync's HTTPS connection was open:
+- **The catalogue parser.** It fed the XML parser (expat) 1 KB at a time. Partway through a page, that overflowed expat's 2 KB working buffer, so expat tried to grow it to 4 KB. That needs a free 4 KB block, and there wasn't one.
+- **The book list behind the sync screen.** The browser kept its loaded page (up to 50 books, about 6 to 13 KB) in memory for the whole sync. From a 50-book list that left the reader with as little as 3.7 KB free. At that level WiFi can't even receive data, so the TLS handshake stalled.
 
-See [Controls](./docs/controls.md) for the full action list and defaults.
+**Fix.**
+- **No parser buffer growth.** Feeding expat 512 bytes at a time kept its buffer at 2 KB. CrossInk v2.0.0 turned off expat's input context (`XML_CONTEXT_BYTES=0`), which keeps CrossInk's own 1 KB slices within 2 KB too, so this fork now uses them. A host test (`test/opds_parser_memory`) checks this:
+  - It builds the firmware's own copy of expat with the device's settings.
+  - It records every allocation made while parsing a realistic 50-book Grimmory page.
+  - It fails if any single request exceeds 2 KB (and does fail with the old expat setting).
+- **Free the browser's page during a sync.** Starting a sync frees the browser's page, and the page reloads when the sync screen closes.
+- **No unused space in the book list.** The sync's list of books on the card starts small and gives back unused space once it's built. This matters more as a library and its sync history grow.
+- **Retry and report memory failures.** A page that runs out of memory is retried. If it still fails, the error says "Memory error" instead of "Failed to fetch feed".
+- **Heap logging.** The serial log records free memory before each catalogue page (`[OSY] Page N attempt M: heap free=... largest=...`).
 
----
+### 4. OPDS reliability
 
-## Tips for the best reading experience
+- Brief connection failures and server errors (408, 429, 5xx) are retried automatically: catalogue pages up to three times, downloads twice, with a short back-off. CrossInk v2.0.0 already resumes a download that is cut short; these retries cover server errors and fresh starts. Errors that won't change on retry, such as a rejected login or a missing page, are not retried.
+- Catalogue errors use CrossInk v2.0.0's messages (login rejected, server error, unreachable). Download errors add the server's HTTP status, for example "Download failed (HTTP 404)".
+- **Retry** after a failed download retries that book instead of reloading the catalogue page, and **Back** returns to the book list.
 
-CrossInk runs on a small, low-power chip with limited memory (especially on the Xteink X3 and X4), so very large folders or complex EPUBs can be slower than they would be on a phone, tablet, or computer.
+## Credit: Library Sync for KOReader
 
-- Keep folders under about 200 files. For the smoothest browsing, aim for 50-100 files per folder.
-- Having 1000+ books on the SD card is fine if they are split into smaller folders, such as by author, series, genre, or read/unread status.
-- Avoid putting every book in the SD card root. The file browser has to scan and sort the current folder before it can show it.
-- Text-first EPUBs are the best fit. Large image-heavy EPUBs, scanned books, comics, and omnibus files with thousands of sections may load slowly or fail under memory pressure.
-- As a rough target, EPUBs under 20 MB tend to work the best. Files over 50 MB may still work, but they are more likely to be slow or memory-sensitive, especially if they contain many large images.
-- If an EPUB is unusually slow, try [optimizing](./docs/webserver.md#epub-optimization) it with the built-in web optimizer (via File Transfer) before copying it to the SD card: remove unused high-resolution images, split very large omnibus files, and avoid embedding multiple full font families when possible.
-- Use a reliable SD card and leave some free space. CrossInk stores settings, reading progress, cache files, stats, and generated book data on the card.
+This feature would not be possible without the fantastic [Library Sync for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson ([komadorirobin](https://github.com/komadorirobin)), released under the MIT licence. The sync feature is a port of its "Sync missing books" flow, and all credit for the idea and the workflow goes to that project. If you use KOReader, it is the plugin to use, and it does far more than this port.
 
----
+**How it was ported.** No code was copied: the plugin is Lua running inside KOReader, and this fork is C++ firmware for a microcontroller. What carried over is the plugin's design:
 
-## Installation
+- The same three-step flow: scan local books, walk the paginated OPDS catalogue with Basic authentication, then download what is missing.
+- The same fuzzy duplicate detection: compare normalised titles and authors across the file-naming patterns downloaders use.
+- The same rule of stopping before any download if the catalogue can't be read completely.
 
-The fastest way to install CrossInk is with Inky, CrossInk's web companion app: https://inky.crossink.dev/#flash-tools. Connect your reader to your computer with a USB cable and follow the steps on the page.
+**What changed in the port**
 
-You can also download a `firmware-*.bin` file from the [releases page](https://github.com/uxjulia/CrossInk/releases) and flash it with the web installer or the command line.
+KOReader devices have hundreds of megabytes of RAM, so the plugin can hold a whole catalogue in memory. An X3 or X4 cannot. The port therefore:
+- streams each page through the parser
+- keeps the download queue on the SD card
+- matches local books by hash
+- adds a per-server ledger of synced books, so a book renamed on the server isn't downloaded twice
 
-See [Installation](./docs/installation.md) for step-by-step flashing and revert instructions.
+**Not ported**
+- Mirror mode (moving books removed from the server to trash)
+- Metadata refresh and replacement of existing files
+- CBZ comics
+- The Grimmory and BookOrbit API extras (genres, tags, author images, uploads)
+- The plugin's own OTA updates
 
----
+## Devices and downloads
 
-## Guides & Documentation
+| Device | Firmware file |
+| --- | --- |
+| Xteink X3 and X4 | `firmware-x3-x4.bin` |
+| Xteink X4 Classic | `firmware-x4-classic.bin` |
+| Xteink X4 Pro | `firmware-x4-pro.bin` |
+| Seeed reTerminal Sticky | `firmware-sticky.bin` |
+| BOOX Picco | `firmware-picco.bin` |
 
-Visit [https://www.crossink.dev](https://www.crossink.dev) for user guides.
-Start with the [User Guide](./docs/user-guide.md), or see [Plugins](./docs/sd-plugins.md)
-for installing and using extensions. Plugin authors can use the separate
-[Plugin Development Guide](./docs/development/plugin-development.md).
+Download from [Releases](https://github.com/HannahTheSpanner/crossink-library-sync/releases). To install on an Xteink or the Sticky, copy the file to the SD card, then on the device open **Settings > System > SD Card Firmware Update** and select it. USB flashing is covered in [docs/installation.md](./docs/installation.md).
 
----
+The BOOX Picco is different: `firmware-picco.bin` is an image for its `app` slot only, and it must be installed with a USB installer that explicitly supports the Picco, without erasing the device, so its recovery software stays intact. SD-card and Wi-Fi updates are not available on the Picco. See [docs/picco.md](./docs/picco.md).
 
-## Development quick start
+Installing an official CrossInk update over the air replaces this fork with upstream CrossInk.
 
-CrossInk uses PlatformIO for building and flashing firmware. See [Getting Started](./docs/development/getting-started.md) for prerequisites, clone setup, and validation commands.
+## Building
 
-### Nix/NixOS
-
-Nix/NixOS users can enter the development shell with either `nix develop` (flakes) or `nix-shell`:
-
-```bash
-nix develop -f nix
-# or
-nix-shell nix
-```
-
-To flash a connected device, enable PlatformIO's udev rules in your NixOS configuration:
-
-```nix
-services.udev.packages = with pkgs; [ platformio-core.udev ];
-```
-
-After rebuilding the system configuration, reconnect the device or reload udev rules.
-
-### Build / flash / monitor
-
-Connect your device to your computer via a USB cable. Before the first build, initialize the repository's submodules (including `freeink-sdk`):
+GitHub Actions builds all five firmware files on every push, and runs the OPDS, TLS and download host tests. To build locally, use PlatformIO as described in CrossInk's [Getting Started](./docs/development/getting-started.md) guide:
 
 ```sh
 git submodule update --init --recursive
+pio run -e default      # X3 and X4
+pio run -e x4-classic   # X4 Classic
+pio run -e x4-pro       # X4 Pro
+pio run -e sticky       # reTerminal Sticky
+pio run -e picco        # BOOX Picco
 ```
 
-Then flash the firmware using the correct environment for the device. The `default` environment is for the X3/X4 devices. The X4 Classic, X4 Pro, and Sticky (ESP32-S3) have their own named environments.
+Host tests for this fork's changes:
 
 ```sh
-pio run -e default --target upload
+cmake -S test -B build-tests
+cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibraryMatchTest TlsRecordReserveTest HttpDownloaderTest HttpDownloaderDevicePathTest
+ctest --test-dir build-tests -R "Opds|TlsRecordReserve|HttpDownloader"
 ```
 
-If PlatformIO reports `PackageException: Can not create a symbolic link for freeink-sdk/libs/hardware/BatteryMonitor, not a directory`, the `freeink-sdk` submodule is not initialized. Run the submodule command above and retry.
+## Credits and support
 
-See [Testing and Debugging](./docs/development/testing-debugging.md) for serial logging, simulator checks, static analysis, and bug-report guidance.
+This fork stands on two firmware projects, and the credit for nearly all of it belongs to them equally. My changes are the sync feature and the OPDS fixes described above.
 
----
+**CrossPoint Reader** is the open-source firmware for Xteink e-readers that CrossInk is a fork of. Credit goes to [Dave Allie](https://github.com/daveallie), who created it, and the CrossPoint team and community of contributors who build it.
+- GitHub: [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
+- Support: [fund CrossPoint's contributors on royalty.dev](https://app.royalty.dev/crosspoint-reader/crosspoint-reader). CrossPoint also receives a small share of each X3/X4 Developer Edition sold through [crosspointreader.com](https://crosspointreader.com).
 
-## Notice on Contributions
+**CrossInk** is uxjulia's fork of CrossPoint, adding the typography, themes, reading stats and reader features this fork is built on.
+- GitHub: [uxjulia/crossink](https://github.com/uxjulia/crossink)
+- Support: [Ko-fi](https://ko-fi.com/uxjulia) or [GitHub Sponsors](https://github.com/sponsors/uxjulia)
 
-This repository does not accept pull requests. Feature requests may be opened in [discussions](https://github.com/uxjulia/CrossInk/discussions), but major features requiring ongoing support should be directed upstream to [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader).
+**Library Sync for KOReader** by Robin Bolinsson is the plugin the sync feature is ported from.
+- GitHub: [komadorirobin/library-sync.koplugin](https://github.com/komadorirobin/library-sync.koplugin)
 
----
+Please report problems with anything other than library sync and the OPDS fixes above to CrossInk or CrossPoint, not here.
 
-If you'd like to show some love and support ongoing development, please consider supporting me on Ko-fi.
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q01M6S7)
+This fork is released under the same MIT licence as CrossPoint and CrossInk; see [LICENSE](./LICENSE).
