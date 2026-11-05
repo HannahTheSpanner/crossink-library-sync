@@ -19,14 +19,6 @@ OVERRIDES = f"""
 #ifndef FREEINK_WOLFSSL_DEBUG
 #undef DEBUG_WOLFSSL
 #endif
-/* Ask servers for 2 KB TLS records (RFC 6066 max_fragment_length). SecureClient
-   already calls wolfSSL_UseMaxFragment when this is defined, but
-   Arduino-wolfSSL's user_settings.h never defines it, so the request was not
-   being sent and every server used 16 KB records. Servers that do not support
-   the extension ignore it. */
-#ifndef HAVE_MAX_FRAGMENT
-#define HAVE_MAX_FRAGMENT
-#endif
 """
 
 
@@ -47,8 +39,9 @@ def patch_user_settings(path: Path) -> None:
 # ignores max_fragment_length sends 16 KB records, so a large download on a
 # PSRAM-less C3 needs a fresh ~17 KB contiguous block for every record, and
 # fails with MEMORY_E once fragmentation leaves none. Keep the grown buffer
-# until the connection is freed: one allocation per connection, failing at the
-# first record rather than megabytes into the transfer.
+# until the connection is freed, reusing it for records that fit. A later,
+# larger record can still require growth; release a consumed buffer first so
+# growth does not require both the old and new allocations simultaneously.
 SHRINK_MARKER = "/* CrossInk: keep a grown input buffer until the connection is freed */"
 SHRINK_ORIGINAL = """    if (!forcedFree && (usedLength > STATIC_BUFFER_LEN ||
             ssl->buffers.clearOutputBuffer.length > 0))
@@ -64,109 +57,7 @@ SHRINK_PATCHED = f"""    {SHRINK_MARKER}
 #else
 {SHRINK_ORIGINAL}#endif
 """
-env.Append(CPPDEFINES=["FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER"])
-
-
-# A TLS client must buffer a whole record before decrypting it, and servers that
-# ignore max_fragment_length send 16 KB records. On PSRAM-less C3 boards the
-# ~16.7 KB contiguous block that needs is usually gone by the time a large OPDS
-# page or book arrives, and the transfer fails with MEMORY_E (-125). Let the
-# input buffer borrow the block src/network/TlsRecordReserve.cpp set aside before
-# the heap fragmented, recording its full capacity so the buffer never has to
-# grow again, and tell CrossInk when a server agrees to small records so the
-# block can be returned. Without a reserved block the original allocation runs.
-RESERVE_MARKER = "/* CrossInk: TLS record reserve */"
-RESERVE_DECL_ORIGINAL = """int GrowInputBuffer(WOLFSSL* ssl, int size, int usedLength)
-{
-    byte* tmp;
-"""
-RESERVE_DECL_PATCHED = f"""{RESERVE_MARKER}
-#if defined(FREEINK_TLS_RECORD_RESERVE)
-void* FreeInkTlsRecordReserveTake(unsigned int want, unsigned int* capacity);
-/* Referenced by TlsRecordReserve.cpp so the firmware fails to link, rather than
-   silently losing the fix, if this patch was not applied. */
-const int FreeInkTlsRecordReservePatched = 1;
-#endif
-int GrowInputBuffer(WOLFSSL* ssl, int size, int usedLength)
-{{
-    byte* tmp;
-    unsigned int freeinkCapacity = 0;
-"""
-RESERVE_ALLOC_ORIGINAL = """    tmp = (byte*)XMALLOC(size + usedLength + align,
-                             ssl->heap, DYNAMIC_TYPE_IN_BUFFER);
-"""
-RESERVE_ALLOC_PATCHED = """    tmp = NULL;
-#if defined(FREEINK_TLS_RECORD_RESERVE)
-    tmp = (byte*)FreeInkTlsRecordReserveTake((unsigned int)(size + usedLength + align), &freeinkCapacity);
-#endif
-    if (tmp == NULL) {
-        freeinkCapacity = (unsigned int)(size + usedLength + align);
-        tmp = (byte*)XMALLOC(size + usedLength + align,
-                             ssl->heap, DYNAMIC_TYPE_IN_BUFFER);
-    }
-"""
-RESERVE_SIZE_ORIGINAL = """    ssl->buffers.inputBuffer.buffer = tmp;
-    ssl->buffers.inputBuffer.bufferSize = size + usedLength;
-"""
-RESERVE_SIZE_PATCHED = """    ssl->buffers.inputBuffer.buffer = tmp;
-    ssl->buffers.inputBuffer.bufferSize = freeinkCapacity - align;
-"""
-
-MFL_MARKER = "/* CrossInk: report accepted max_fragment_length */"
-MFL_ORIGINAL = """    if (ssl->session != NULL) {
-        ssl->session->mfl = *input;
-    }
-"""
-MFL_PATCHED = f"""    if (ssl->session != NULL) {{
-        ssl->session->mfl = *input;
-    }}
-    {MFL_MARKER}
-#if defined(FREEINK_TLS_RECORD_RESERVE)
-    if (!isRequest)
-        FreeInkTlsRecordReserveSmallRecords(ssl->max_fragment);
-#endif
-"""
-MFL_DECL_ORIGINAL = """static int TLSX_MFL_Parse(WOLFSSL* ssl, const byte* input, word16 length,
-                          byte isRequest)
-"""
-MFL_DECL_PATCHED = """#if defined(FREEINK_TLS_RECORD_RESERVE)
-void FreeInkTlsRecordReserveSmallRecords(unsigned int maxFragment);
-#endif
-static int TLSX_MFL_Parse(WOLFSSL* ssl, const byte* input, word16 length,
-                          byte isRequest)
-"""
-env.Append(CPPDEFINES=["FREEINK_TLS_RECORD_RESERVE"])
-
-
-def apply_exact(text: str, original: str, patched: str, path: Path, what: str) -> str:
-    if text.count(original) != 1:
-        raise RuntimeError(f"Unsupported wolfSSL {what} in {path}; refusing an unverified patch")
-    return text.replace(original, patched, 1)
-
-
-def patch_record_reserve(path: Path) -> None:
-    text = path.read_text()
-    if RESERVE_MARKER in text:
-        if text.count(RESERVE_ALLOC_PATCHED) != 1 or text.count(RESERVE_SIZE_PATCHED) != 1:
-            raise RuntimeError(f"Corrupt wolfSSL record reserve patch in {path}")
-        return
-    text = apply_exact(text, RESERVE_DECL_ORIGINAL, RESERVE_DECL_PATCHED, path, "GrowInputBuffer")
-    text = apply_exact(text, RESERVE_ALLOC_ORIGINAL, RESERVE_ALLOC_PATCHED, path, "input buffer allocation")
-    text = apply_exact(text, RESERVE_SIZE_ORIGINAL, RESERVE_SIZE_PATCHED, path, "input buffer size")
-    path.write_text(text)
-    print(f"Patched wolfSSL record reserve: {path.relative_to(PROJECT_DIR)}")
-
-
-def patch_mfl_report(path: Path) -> None:
-    text = path.read_text()
-    if MFL_MARKER in text:
-        if text.count(MFL_PATCHED) != 1:
-            raise RuntimeError(f"Corrupt wolfSSL max_fragment_length patch in {path}")
-        return
-    text = apply_exact(text, MFL_DECL_ORIGINAL, MFL_DECL_PATCHED, path, "TLSX_MFL_Parse")
-    text = apply_exact(text, MFL_ORIGINAL, MFL_PATCHED, path, "max_fragment_length parse")
-    path.write_text(text)
-    print(f"Patched wolfSSL max_fragment_length report: {path.relative_to(PROJECT_DIR)}")
+env.Append(CPPDEFINES=["FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER", "FREEINK_WOLFSSL_RELEASE_EMPTY_INPUT_BUFFER"])
 
 
 def patch_input_buffer_shrink(path: Path) -> None:
@@ -181,12 +72,42 @@ def patch_input_buffer_shrink(path: Path) -> None:
     print(f"Patched wolfSSL input buffer: {path.relative_to(PROJECT_DIR)}")
 
 
+# A separate flag lets an older build disable this change even when its
+# dependency cache still contains the patched source.
+GROW_MARKER = "/* CrossInk: release a consumed input buffer before growing it */"
+GROW_ORIGINAL = """    tmp = (byte*)XMALLOC(size + usedLength + align,
+                             ssl->heap, DYNAMIC_TYPE_IN_BUFFER);
+    WOLFSSL_MSG("growing input buffer");
+"""
+GROW_PATCHED = f"""    {GROW_MARKER}
+#if defined(FREEINK_WOLFSSL_RELEASE_EMPTY_INPUT_BUFFER)
+    /* No unread ciphertext or pending plaintext may refer to this buffer.
+     * ShrinkInputBuffer zeroes/frees it and restores valid static-buffer state,
+     * including on allocation failure below. Records that fit never get here. */
+    if (ssl->buffers.inputBuffer.dynamicFlag && usedLength == 0 &&
+            ssl->buffers.inputBuffer.length == ssl->buffers.inputBuffer.idx &&
+            ssl->buffers.clearOutputBuffer.length == 0) {{
+        ShrinkInputBuffer(ssl, FORCED_FREE);
+    }}
+#endif
+{GROW_ORIGINAL}"""
+
+
+def patch_input_buffer_growth(path: Path) -> None:
+    text = path.read_text()
+    if GROW_MARKER in text:
+        if text.count(GROW_PATCHED) != 1:
+            raise RuntimeError(f"Corrupt wolfSSL input growth patch in {path}")
+        return
+    if text.count(GROW_ORIGINAL) != 1:
+        raise RuntimeError(f"Unsupported wolfSSL GrowInputBuffer in {path}; refusing an unverified patch")
+    path.write_text(text.replace(GROW_ORIGINAL, GROW_PATCHED, 1))
+    print(f"Patched wolfSSL input growth: {path.relative_to(PROJECT_DIR)}")
+
+
 for settings in PROJECT_DIR.glob(".pio/libdeps/*/Arduino-wolfSSL/src/user_settings.h"):
     patch_user_settings(settings)
 
 for internal in PROJECT_DIR.glob(".pio/libdeps/*/Arduino-wolfSSL/src/src/internal.c"):
     patch_input_buffer_shrink(internal)
-    patch_record_reserve(internal)
-
-for tls in PROJECT_DIR.glob(".pio/libdeps/*/Arduino-wolfSSL/src/src/tls.c"):
-    patch_mfl_report(tls)
+    patch_input_buffer_growth(internal)

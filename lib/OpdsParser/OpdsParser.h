@@ -2,11 +2,13 @@
 #include <Print.h>
 #include <expat.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
 constexpr size_t MAX_OPDS_FEED_ENTRIES = 50;
+constexpr size_t MAX_OPDS_DESCRIPTION_BYTES = 256;
 
 /**
  * Type of OPDS entry.
@@ -16,25 +18,7 @@ enum class OpdsEntryType {
   BOOK         // Downloadable book
 };
 
-enum class OpdsParserError {
-  NONE,
-  NO_ENTRY_BUFFER,
-  INVALID_INPUT,
-  PARSER_MEMORY,
-  BUFFER_MEMORY,
-  XML_PARSE,
-  SINK_ABORTED
-};
-
-struct OpdsEntry;
-
-/**
- * Receives each completed entry when the parser runs in streaming mode.
- * The entry is owned by the parser and is reset after the call, so the sink
- * may move strings out of it. Return false to stop parsing (the parser then
- * reports SINK_ABORTED).
- */
-using OpdsEntrySink = bool (*)(void* context, OpdsEntry& entry);
+enum class OpdsParserError { NONE, NO_ENTRY_BUFFER, INVALID_INPUT, PARSER_MEMORY, BUFFER_MEMORY, XML_PARSE };
 
 /**
  * Represents an entry from an OPDS feed (either a navigation link or a book).
@@ -48,6 +32,12 @@ struct OpdsEntry {
   // Item count advertised for a navigation entry (thr:count on its link, or a
   // "<N> books" summary); -1 when the feed does not say.
   int32_t count = -1;
+  // A bounded preview, stored in the caller's fallibly allocated entry array.
+  // 257 bytes per entry, no per-description heap allocations (13 KB / feed).
+  std::array<char, MAX_OPDS_DESCRIPTION_BYTES + 1> description{};
+  std::string selfHref;  // OPDS 2 publication metadata document
+  bool indirect = false;
+  bool unsupportedAcquisition = false;  // Purchase or LCP service required
 };
 
 // Legacy alias for backward compatibility
@@ -151,11 +141,6 @@ class OpdsParser final : public Print {
   OpdsParser(OpdsEntry* entries, size_t entryCapacity);
   template <size_t N>
   explicit OpdsParser(OpdsEntry (&entries)[N]) : OpdsParser(entries, N) {}
-  /**
-   * Streaming mode: every completed entry is handed to `sink` instead of being
-   * stored, so a feed page of any length is parsed with constant memory.
-   */
-  OpdsParser(OpdsEntrySink sink, void* sinkContext);
   ~OpdsParser();
 
   // Disable copy
@@ -185,10 +170,6 @@ class OpdsParser final : public Print {
   OpdsEntryView getEntries() const { return OpdsEntryView(entries, entryCount); }
   OpdsBookView getBooks() const { return OpdsBookView(entries, entryCount); }
   bool wasTruncated() const { return truncated; }
-  // Every closed <entry> element, including ones dropped for lacking a title
-  // or a usable link (for example PDF-only books). Lets a caller report how
-  // much of a catalogue it could not use.
-  size_t getEntriesSeen() const { return entriesSeen; }
 
   /**
    * Clear all parsed entries.
@@ -214,10 +195,6 @@ class OpdsParser final : public Print {
   OpdsEntry* entries = nullptr;
   size_t entryCapacity = 0;
   size_t entryCount = 0;
-  size_t entriesSeen = 0;
-  OpdsEntrySink sink = nullptr;
-  void* sinkContext = nullptr;
-  bool sinkStopped = false;
   OpdsEntry currentEntry;
   std::string currentText;
 
@@ -228,6 +205,11 @@ class OpdsParser final : public Print {
   bool inAuthorName = false;
   bool inId = false;
   bool inSummary = false;
+  bool summaryIsContent = false;
+  bool descriptionMarkup = false;
+  bool descriptionIsHtml = false;
+  bool collectDescription = false;
+  unsigned descriptionDepth = 0;
 
   bool errorOccured = false;
   OpdsParserError errorReason = OpdsParserError::NONE;

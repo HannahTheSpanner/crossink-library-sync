@@ -14,6 +14,7 @@
 #include "OpdsServerStore.h"
 #include "activities/Activity.h"
 #include "activities/ScreenTransitionRefresh.h"
+#include "network/HttpDownloader.h"
 #include "util/ButtonNavigator.h"
 
 /**
@@ -22,7 +23,16 @@
  */
 class OpdsBookBrowserActivity final : public Activity {
  public:
-  enum class BrowserState { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, ERROR, SEARCH_INPUT };
+  enum class BrowserState {
+    CHECK_WIFI,
+    WIFI_SELECTION,
+    LOADING,
+    BROWSING,
+    DESCRIPTION,
+    DOWNLOADING,
+    ERROR,
+    SEARCH_INPUT
+  };
 
   explicit OpdsBookBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, OpdsServer server);
 
@@ -32,39 +42,37 @@ class OpdsBookBrowserActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+#ifdef SIMULATOR
+  friend struct OpdsCatalogSmokeTest;
+#endif
+
+  // Own only the selected book metadata while the full catalog is released.
+  // The extra title copy is parser-bounded to 160 bytes and must outlive an
+  // overwrite callback; URL/filename storage was already needed for downloads.
+  struct DownloadRequest {
+    std::string url;
+    std::string title;
+    std::string filename;
+  };
+
   // FreeInkUI app runtime for the browsing screen: owns the interaction table,
   // routes touch snapshots, and dispatches row/search actions to the static
   // handlers below. 24 interaction slots cover the densest page (Small scale,
   // ~12 rows) plus the header's search button, with headroom.
-  using UiApp = freeink::ui::FreeInkApp<24, 4>;
+  using UiApp = freeink::ui::FreeInkApp<24, 6>;
 
   ButtonNavigator buttonNavigator;
   BrowserState state = BrowserState::LOADING;
   ScreenTransitionRefresh screenTransitionRefresh;
   std::unique_ptr<OpdsEntry[]> entries;
-  // Parsed entries plus the synthetic sync, previous-page and next-page rows.
-  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 3;
+  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 2;
   // 832 bytes owned by this activity; reused each render rather than allocated on the task stack.
   std::array<std::array<char, 16>, OPDS_BROWSER_ENTRY_CAPACITY> countLabels{};
   size_t entryCount = 0;
   bool hasPrevPageRow = false;
   bool hasNextPageRow = false;
-  // Row 0 can be "Sync missing books": bulk-download what syncFeedUrl lists
-  // and the card lacks (OpdsLibrarySyncActivity).
-  bool hasSyncRow = false;
-  std::string syncFeedUrl;
-  std::string syncFeedTitle;
-  // A catalogue's first page and title. Pagination keeps them, so a sync
-  // started from page 3 still walks the whole catalogue.
-  struct HistoryEntry {
-    std::string path;
-    std::string feedRoot;
-    std::string feedTitle;
-  };
-  std::vector<HistoryEntry> navigationHistory;
+  std::vector<std::string> navigationHistory;
   std::string currentPath;
-  std::string feedRootPath;
-  std::string feedTitle;
   std::string searchTemplate;
   int selectorIndex = 0;
   std::string errorMessage;
@@ -80,20 +88,21 @@ class OpdsBookBrowserActivity final : public Activity {
   // snapshots against it while this is true (the two run on different tasks).
   std::atomic<bool> uiReady{false};
   int visibleRows = 1;  // rows per page at the current scale; set by the screen builder
-  int topIndex = 0;     // viewport scroll position, decoupled from the selection
+  // Wrapped only when a preview opens or its available width changes.
+  std::vector<std::string> descriptionLines;
+  int descriptionWidth = 0;
+  int descriptionTop = 0;
+  int descriptionRows = 1;
+  int topIndex = 0;  // viewport scroll position, decoupled from the selection
   // Read by HttpDownloader between chunks; set by the Cancel button handler or
   // a Back press, both pumped from the download's progress callback.
   bool cancelDownload = false;
   // A blocking downloader consumes the one-shot Home event itself. Defer the
   // activity exit until HttpDownloader has unwound and closed the partial file.
   bool goHomeAfterCancel = false;
-  // Set while the error screen shows a failed download: Retry repeats that
-  // download and Back returns to the still-loaded list. Null for feed errors.
-  std::unique_ptr<OpdsEntry> retryDownload;
-  std::string retryDownloadPath;
-  // Set when the library sync screen closes: launchLibrarySync() freed the
-  // page to give the sync more memory, and loop() fetches it again.
-  bool reloadAfterSync = false;
+  bool catalogReleasedForDownload = false;
+  int downloadSelectorIndex = 0;
+  int downloadTopIndex = 0;
 
   // Single screen fn dispatching on `state`: every state shares the themed
   // header and gets built through FreeInkUI.
@@ -103,6 +112,10 @@ class OpdsBookBrowserActivity final : public Activity {
   static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
   void screenHeader(UiApp::ScreenType& screen, bool withSearch);
   void buildBrowsingScreen(UiApp::ScreenType& screen);
+  static void provideRow(void* user, uint16_t index, freeink::ui::ListItem& item);
+  static void onDescriptionEvent(const freeink::ui::ActionEvent& event, void* user);
+  void scrollDescription(int direction);
+  void buildDescriptionScreen(UiApp::ScreenType& screen);
   void buildDownloadScreen(UiApp::ScreenType& screen);
   void buildStatusScreen(UiApp::ScreenType& screen);
   void activateSelected();
@@ -117,10 +130,13 @@ class OpdsBookBrowserActivity final : public Activity {
   bool appendEntry(OpdsEntry&& entry);
   void navigateToEntry(const OpdsEntry& entry, bool pageLink);
   void navigateBack();
-  void addSyncRow(const std::string& pageUrl);
-  void launchLibrarySync();
+  bool loadPublication(OpdsEntry& book, const std::string& url);
+  void openPublication(OpdsEntry& book);
   void requestDownload(const OpdsEntry& book);
-  void downloadBook(const OpdsEntry& book, const std::string& filename);
+  void confirmDownload(DownloadRequest request, const std::string& destination);
+  void downloadBook(DownloadRequest request, const std::string& approvedPath = "");
+  void finishDownload(DownloadRequest request, HttpDownloader::DownloadError result, const std::string& resolvedPath);
+  void restoreCatalogAfterDownload();
   void launchSearch();
   void performSearch(const std::string& query);
   bool preventAutoSleep() override;

@@ -20,8 +20,6 @@ concurrency:
 
 jobs:
   deploy:
-    # Upstream-only: this fork does not publish the project website.
-    if: github.repository == 'uxjulia/crossink'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
