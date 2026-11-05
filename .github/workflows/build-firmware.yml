@@ -53,9 +53,10 @@ jobs:
           cmake --build build-tests -j4 --target $targets
 
       # "Opds" also selects the OPDS feed recovery harness, which compiles the
-      # browser's real fetchFeed()/addSyncRow() against stubs.
+      # browser's real fetchFeed()/addSyncRow() against stubs. Upstream's
+      # OpdsServerStoreTest does not link at v2.0.0-rc, so it is not built.
       - name: Run OPDS, TLS and download tests
-        run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve|HttpDownloader"
+        run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve|HttpDownloader" -E "OpdsServerStore"
 
   firmware:
     name: Firmware (${{ matrix.device }})
