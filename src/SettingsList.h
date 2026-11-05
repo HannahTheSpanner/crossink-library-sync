@@ -21,6 +21,7 @@
 #include "QuickActions.h"
 #include "activities/settings/SettingsActivity.h"
 #include "components/UITheme.h"
+#include "util/BuiltinFontFamilies.h"
 #include "util/Dictionary.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FontFamilyLabel.h"
@@ -151,7 +152,7 @@ inline uint8_t closestPointSizeIndex(const std::vector<uint8_t>& sizes, const ui
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // Built-in font labels (StrId)
-  std::vector<StrId> enumValues = {StrId::STR_LEXEND_DECA, StrId::STR_BITTER};
+  std::vector<StrId> enumValues(BUILTIN_FONT_FAMILY_LABELS.begin(), BUILTIN_FONT_FAMILY_LABELS.end());
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
 
@@ -173,8 +174,9 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
     constexpr auto builtinRange = BUILTIN_FONT_POINT_SIZE_RANGE;
-    allStringValues.push_back(fontFamilyLabel(I18N.get(StrId::STR_LEXEND_DECA), builtinRange));
-    allStringValues.push_back(fontFamilyLabel(I18N.get(StrId::STR_BITTER), builtinRange));
+    for (const StrId label : BUILTIN_FONT_FAMILY_LABELS) {
+      allStringValues.push_back(fontFamilyLabel(I18N.get(label), builtinRange));
+    }
     allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
   }
 

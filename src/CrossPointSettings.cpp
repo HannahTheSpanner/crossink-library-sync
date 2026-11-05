@@ -1514,7 +1514,9 @@ int CrossPointSettings::getReaderFontId() const {
 
 int CrossPointSettings::getBuiltInReaderFontId() const {
 #if CROSSINK_SCALABLE_FONTS
-  return scalableBuiltinReaderFontId(fontFamily == BITTER ? 1 : 0, closestBuiltinReaderPointSize(readerFontPointSize));
+  // Scalable built-in families are indexed like FONT_FAMILY.
+  return scalableBuiltinReaderFontId(fontFamily < FONT_FAMILY_COUNT ? fontFamily : LEXENDDECA,
+                                     closestBuiltinReaderPointSize(readerFontPointSize));
 #else
   const FONT_SIZE effectiveSize = getEffectiveReaderFontSize();
 

@@ -90,6 +90,13 @@ struct FileOps {
   bool (*close)(void*);
 };
 enum class Result : uint8_t { Saved, SavedBackupRetained, Failed, RecoveryRequired, OutOfMemory };
+// Built-in reader font families (Lexend Deca, Bitter, and EB Garamond on
+// readers with scalable fonts); larger book values fall back to the global one.
+#if CROSSINK_SCALABLE_FONTS
+constexpr uint8_t BuiltinFontFamilyCount = 3;
+#else
+constexpr uint8_t BuiltinFontFamilyCount = 2;
+#endif
 constexpr const char* Path = "/crossink-support.json";
 constexpr const char* TempPath = "/crossink-support.json.tmp";
 constexpr const char* BackupPath = "/crossink-support.json.bak";

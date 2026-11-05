@@ -46,6 +46,7 @@
 #include "components/icons/listIcons.h"
 #include "components/icons/touchHeaderIcons.h"
 #include "fontIds.h"
+#include "util/BuiltinFontFamilies.h"
 #include "util/Dictionary.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FontFamilyLabel.h"
@@ -574,10 +575,10 @@ void EpubReaderDrawerActivity::discoverFonts() {
   fontLabels.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + families.size());
   fontSettingIndexes.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + families.size());
   constexpr auto builtinRange = BUILTIN_FONT_POINT_SIZE_RANGE;
-  fontLabels.push_back(fontFamilyLabel(tr(STR_LEXEND_DECA), builtinRange));
-  fontLabels.push_back(fontFamilyLabel(tr(STR_BITTER), builtinRange));
-  fontSettingIndexes.push_back(0);
-  fontSettingIndexes.push_back(1);
+  for (uint8_t i = 0; i < BUILTIN_FONT_FAMILY_LABELS.size(); ++i) {
+    fontLabels.push_back(fontFamilyLabel(I18N.get(BUILTIN_FONT_FAMILY_LABELS[i]), builtinRange));
+    fontSettingIndexes.push_back(i);
+  }
   for (size_t i = 0; i < families.size(); ++i) {
     fontLabels.push_back(fontFamilyLabel(families[i].name, fontFamilyPointSizeRange(families[i])));
     fontSettingIndexes.push_back(static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i));
@@ -2581,9 +2582,12 @@ void EpubReaderDrawerActivity::renderPreviewContents(const ReaderSettingsDraft& 
     const auto& metrics = UITheme::getInstance().getMetrics();
     const int labelTextHeight = renderer.getTextHeight(UI_10_FONT_ID);
     const int noteHeight = previewSettings.textAntiAliasing ? labelTextHeight + 2 : 0;
-    const char* name = previewSettings.sdFontFamilyName[0]
-                           ? previewSettings.sdFontFamilyName.data()
-                           : (previewSettings.fontFamily == 0 ? tr(STR_LEXEND_DECA) : tr(STR_BITTER));
+    const char* name =
+        previewSettings.sdFontFamilyName[0]
+            ? previewSettings.sdFontFamilyName.data()
+            : I18N.get(BUILTIN_FONT_FAMILY_LABELS[previewSettings.fontFamily < BUILTIN_FONT_FAMILY_LABELS.size()
+                                                      ? previewSettings.fontFamily
+                                                      : 0]);
     char label[128];
     std::snprintf(label, sizeof(label), "%s \"%s\", %upt", tr(STR_PREVIEW), name, previewSettings.readerFontPointSize);
     const int labelY = preview.bottom() - metrics.previewPadding - labelTextHeight - noteHeight;
@@ -3255,10 +3259,8 @@ const char* EpubReaderDrawerActivity::rowValue(const RowId row, char* buffer, co
   switch (row) {
     case RowId::FontFamily: {
       if (draft.sdFontFamilyName[0] != '\0') return draft.sdFontFamilyName.data();
-      static constexpr std::array<StrId, CrossPointSettings::BUILTIN_FONT_COUNT> labels = {StrId::STR_LEXEND_DECA,
-                                                                                           StrId::STR_BITTER};
-      if (draft.fontFamily >= labels.size()) return tr(STR_UNAVAILABLE);
-      return I18N.get(labels[draft.fontFamily]);
+      if (draft.fontFamily >= BUILTIN_FONT_FAMILY_LABELS.size()) return tr(STR_UNAVAILABLE);
+      return I18N.get(BUILTIN_FONT_FAMILY_LABELS[draft.fontFamily]);
     }
     case RowId::CharacterSpacing:
       CrossPointSettings::formatCharacterSpacing(draft.characterSpacing, buffer, bufferSize);

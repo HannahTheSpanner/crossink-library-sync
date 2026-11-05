@@ -63,6 +63,7 @@
 #include "sync/SyncPending.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookMoveUtils.h"
+#include "util/BuiltinFontFamilies.h"
 #include "util/FontFamilyLabel.h"
 #include "util/OpdsDownloadFolder.h"
 #include "util/ReaderStatusBarJson.h"
@@ -1863,8 +1864,9 @@ void CrossPointWebServer::handleGetSettings() const {
         JsonArray options = doc["options"].to<JsonArray>();
         if (s.nameId == StrId::STR_FONT_FAMILY && !fontFamilies.empty()) {
           constexpr auto builtinRange = BUILTIN_FONT_POINT_SIZE_RANGE;
-          options.add(fontFamilyLabel(I18N.get(StrId::STR_LEXEND_DECA), builtinRange));
-          options.add(fontFamilyLabel(I18N.get(StrId::STR_BITTER), builtinRange));
+          for (const StrId label : BUILTIN_FONT_FAMILY_LABELS) {
+            options.add(fontFamilyLabel(I18N.get(label), builtinRange));
+          }
           for (const auto& family : fontFamilies) {
             options.add(fontFamilyLabel(family.name, fontFamilyPointSizeRange(family)));
           }

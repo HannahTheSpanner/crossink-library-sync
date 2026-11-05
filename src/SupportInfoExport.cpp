@@ -14,12 +14,12 @@
 
 namespace {
 // Keep the tested support normalizer aligned with applyReaderSettings' constraints.
-static_assert(CrossPointSettings::BUILTIN_FONT_COUNT == 2 && CrossPointSettings::ORIENTATION_COUNT == 4 &&
-              CrossPointSettings::MIN_LINE_HEIGHT_PERCENT == 70 && CrossPointSettings::MAX_LINE_HEIGHT_PERCENT == 200 &&
-              CrossPointSettings::MAX_WORD_SPACING == 8 && CrossPointSettings::MIN_SCREEN_MARGIN == 5 &&
-              CrossPointSettings::MAX_SCREEN_MARGIN == 150 && CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT == 5 &&
-              CrossPointSettings::IMAGE_RENDERING_COUNT == 3 && CrossPointSettings::INDEXING_METHOD_COUNT == 2 &&
-              CrossPointSettings::INDEXING_FULL_SECTION == 1);
+static_assert(CrossPointSettings::BUILTIN_FONT_COUNT == SupportInfo::BuiltinFontFamilyCount &&
+              CrossPointSettings::ORIENTATION_COUNT == 4 && CrossPointSettings::MIN_LINE_HEIGHT_PERCENT == 70 &&
+              CrossPointSettings::MAX_LINE_HEIGHT_PERCENT == 200 && CrossPointSettings::MAX_WORD_SPACING == 8 &&
+              CrossPointSettings::MIN_SCREEN_MARGIN == 5 && CrossPointSettings::MAX_SCREEN_MARGIN == 150 &&
+              CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT == 5 && CrossPointSettings::IMAGE_RENDERING_COUNT == 3 &&
+              CrossPointSettings::INDEXING_METHOD_COUNT == 2 && CrossPointSettings::INDEXING_FULL_SECTION == 1);
 bool isEpub(const std::string& path) {
   const auto n = path.size();
   if (n < 5 || n > 1024 || path[n - 5] != '.') return false;

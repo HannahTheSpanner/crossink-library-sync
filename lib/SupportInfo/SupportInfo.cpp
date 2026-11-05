@@ -47,7 +47,7 @@ const char* bookStatus(BookStatus status) {
 }  // namespace
 void normalizeBookValues(BookContext& b, const uint16_t* g) {
   auto& v = b.values;
-  if (v[Reader_fontFamily] >= 2) {
+  if (v[Reader_fontFamily] >= BuiltinFontFamilyCount) {
     v[Reader_fontFamily] = g[fontFamily];
     b.fallbackMask |= 1U << Reader_fontFamily;
   }

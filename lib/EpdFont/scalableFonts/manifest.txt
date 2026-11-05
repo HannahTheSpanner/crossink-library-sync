@@ -6,3 +6,7 @@ lexenddeca_regular.ttf
 lexenddeca_bold.ttf
 lexenddeca_italic.ttf
 lexenddeca_bolditalic.ttf
+ebgaramond_regular.ttf
+ebgaramond_bold.ttf
+ebgaramond_italic.ttf
+ebgaramond_bolditalic.ttf
