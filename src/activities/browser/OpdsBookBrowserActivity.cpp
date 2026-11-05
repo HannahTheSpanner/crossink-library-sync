@@ -1,21 +1,25 @@
 #include "OpdsBookBrowserActivity.h"
 
 #include <Arduino.h>
+#include <DownloadFileSwap.h>
 #include <FreeInkUIIcon.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <OpdsFeedParser.h>
 #include <OpdsLibraryMatch.h>
-#include <OpdsStream.h>
+#include <OpdsSearchTemplate.h>
 #include <WiFi.h>
 #include <ZipFile.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <iterator>
+#include <optional>
 #include <utility>
 
 #include "CrossPointSettings.h"
@@ -33,10 +37,11 @@
 #include "components/UiAppHelpers.h"
 #include "components/icons/listIcons.h"
 #include "fontIds.h"
-#include "network/DownloadFileSwap.h"
 #include "network/HttpDownloader.h"
 #include "network/TlsRecordReserve.h"
 #include "util/BookCacheUtils.h"
+#include "util/OpdsDownloadFolder.h"
+#include "util/OpdsFeedError.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
 
@@ -47,18 +52,20 @@ constexpr size_t OPDS_DOWNLOAD_BUFFER_SIZE = 2048;
 constexpr fui::ActionId ACTION_ROW = 1;
 constexpr fui::ActionId ACTION_SEARCH = 2;
 constexpr fui::ActionId ACTION_CANCEL = 3;
+constexpr fui::ActionId ACTION_DESCRIPTION = 4;
 // Each progress refresh costs download time: an X4 Pro sync log fitted about
 // 0.6 s per refresh (20 per book at one per 5%), a third of a small book's
 // transfer. Refresh at most every 10 s instead.
 constexpr unsigned long DOWNLOAD_PROGRESS_INTERVAL_MS = 10000;
 // KOReader's library-sync retries each catalog page three times; a book is
-// larger, so it gets one extra attempt rather than two.
+// larger, so it gets one extra attempt rather than two. HttpDownloader also
+// resumes a transfer cut short; these cover server errors and fresh starts.
 constexpr int FEED_ATTEMPTS = 3;
 constexpr int DOWNLOAD_ATTEMPTS = 2;
 constexpr unsigned long RETRY_BACKOFF_MS = 1000;
 
-// "Failed to fetch feed (HTTP 503)": the status tells a rejected login (401),
-// a missing page (404) and a server fault apart without a serial log.
+// "Download failed (HTTP 503)": the status tells a missing book (404) and a
+// server fault apart without a serial log.
 std::string withHttpStatus(const char* message, const int responseStatus) {
   std::string out = message;
   if (responseStatus > 0 && responseStatus != 200) {
@@ -116,6 +123,9 @@ void OpdsBookBrowserActivity::onEnter() {
 
   state = BrowserState::CHECK_WIFI;
   entryCount = 0;
+  catalogReleasedForDownload = false;
+  reloadAfterSync = false;
+  retryDownload.reset();
   navigationHistory.clear();
   searchTemplate = "";
   currentPath = "";
@@ -131,6 +141,7 @@ void OpdsBookBrowserActivity::onEnter() {
   app.on(ACTION_ROW, &OpdsBookBrowserActivity::onRowEvent, this);
   app.on(ACTION_SEARCH, &OpdsBookBrowserActivity::onSearchEvent, this);
   app.on(ACTION_CANCEL, &OpdsBookBrowserActivity::onCancelEvent, this);
+  app.on(ACTION_DESCRIPTION, &OpdsBookBrowserActivity::onDescriptionEvent, this);
   app.setScreen(&OpdsBookBrowserActivity::rootScreen, this);
   requestUpdate();
 
@@ -175,9 +186,13 @@ void OpdsBookBrowserActivity::activateSelected() {
     launchLibrarySync();
     return;
   }
-  const auto& entry = entries[selectorIndex];
+  auto& entry = entries[selectorIndex];
   if (entry.type == OpdsEntryType::BOOK) {
-    requestDownload(entry);
+    if (entry.description[0] || !entry.selfHref.empty() || entry.indirect || entry.unsupportedAcquisition) {
+      openPublication(entry);
+    } else {
+      requestDownload(entry);
+    }
     return;
   }
   const int prevRowIndex = hasSyncRow ? 1 : 0;
@@ -211,8 +226,56 @@ void OpdsBookBrowserActivity::onCancelEvent(const fui::ActionEvent&, void* user)
   self->cancelDownload = true;
 }
 
+void OpdsBookBrowserActivity::scrollDescription(const int direction) {
+  RenderLock lock;
+  const int next = scrollListBy(descriptionTop, direction * descriptionRows, descriptionRows,
+                                static_cast<int>(descriptionLines.size()));
+  if (next != descriptionTop) {
+    descriptionTop = next;
+    requestUpdate();
+  }
+}
+
+void OpdsBookBrowserActivity::onDescriptionEvent(const fui::ActionEvent& event, void* user) {
+  auto* self = static_cast<OpdsBookBrowserActivity*>(user);
+  if (self->state != BrowserState::DESCRIPTION) return;
+  self->app.clearTapFlash();
+  if (event.value == 0)
+    self->requestDownload(self->entries[self->selectorIndex]);
+  else
+    self->scrollDescription(event.value);
+}
+
 void OpdsBookBrowserActivity::loop() {
   if (state == BrowserState::WIFI_SELECTION || state == BrowserState::SEARCH_INPUT) {
+    return;
+  }
+
+  if (state == BrowserState::DESCRIPTION) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+        TouchHeaderBackButton::wasTapped(mappedInput, renderer)) {
+      RenderLock lock;
+      state = BrowserState::BROWSING;
+      uiReady = false;
+      descriptionLines.clear();
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      requestDownload(entries[selectorIndex]);
+      return;
+    }
+    if (uiReady) {
+      const auto snap = touchSnapshotFrom(mappedInput);
+      if ((snap.touchPressed || snap.touchReleased) && app.route(snap)) return;
+    }
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up)
+      scrollDescription(1);
+    else if (swipe == MappedInputManager::SwipeDir::Down)
+      scrollDescription(-1);
+    buttonNavigator.onNext([this] { scrollDescription(1); });
+    buttonNavigator.onPrevious([this] { scrollDescription(-1); });
     return;
   }
 
@@ -233,20 +296,21 @@ void OpdsBookBrowserActivity::loop() {
         launchWifiSelection();
       } else if (retryDownload) {
         // Retry the book that failed, not the catalog page behind it.
-        const OpdsEntry book = *retryDownload;
-        const std::string path = std::move(retryDownloadPath);
+        DownloadRequest request = std::move(*retryDownload);
+        const std::string approvedPath = std::move(retryApprovedPath);
         retryDownload.reset();
-        downloadBook(book, path);
+        downloadBook(std::move(request), approvedPath);
+      } else if (catalogReleasedForDownload) {
+        restoreCatalogAfterDownload();
       } else {
         showLoadingBeforeFetch();
         fetchFeed(currentPath);
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      if (retryDownload && entryCount > 0) {
-        // The catalog page is still loaded; go back to it instead of leaving it.
+      if (retryDownload && catalogReleasedForDownload) {
+        // Back from a failed download returns to its catalog page, not the parent.
         retryDownload.reset();
-        state = BrowserState::BROWSING;
-        requestUpdate();
+        restoreCatalogAfterDownload();
       } else {
         retryDownload.reset();
         navigateBack();
@@ -270,8 +334,7 @@ void OpdsBookBrowserActivity::loop() {
     }
     if (cancelDownload || mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       cancelDownload = false;
-      state = BrowserState::BROWSING;
-      requestUpdate();
+      finishDownload({}, HttpDownloader::ABORTED, "");
     }
 #endif
     return;
@@ -348,6 +411,7 @@ bool OpdsBookBrowserActivity::preventAutoSleep() {
     case BrowserState::SEARCH_INPUT:
       return true;
     case BrowserState::BROWSING:
+    case BrowserState::DESCRIPTION:
     case BrowserState::ERROR:
       return false;
   }
@@ -359,6 +423,9 @@ void OpdsBookBrowserActivity::rootScreen(UiApp::ScreenType& screen, void* user) 
   switch (self->state) {
     case BrowserState::BROWSING:
       self->buildBrowsingScreen(screen);
+      break;
+    case BrowserState::DESCRIPTION:
+      self->buildDescriptionScreen(screen);
       break;
     case BrowserState::DOWNLOADING:
       self->buildDownloadScreen(screen);
@@ -372,8 +439,9 @@ void OpdsBookBrowserActivity::rootScreen(UiApp::ScreenType& screen, void* user) 
 // Shared chrome for every state: reserve the firmware's button-hint band and
 // draw the themed header (padding, centering, and rule come from the theme).
 void OpdsBookBrowserActivity::screenHeader(UiApp::ScreenType& screen, const bool withSearch) {
-  screen.takeBottom(static_cast<int16_t>(UITheme::getInstance().getMetrics().buttonHintsHeight));
-  const bool useTouchBackHeader = state == BrowserState::BROWSING && mappedInput.hasTouchHardware();
+  screen.takeBottom(static_cast<int16_t>(UITheme::getButtonHintsReserve(renderer)));
+  const bool useTouchBackHeader =
+      (state == BrowserState::BROWSING || state == BrowserState::DESCRIPTION) && mappedInput.hasTouchHardware();
   if (useTouchBackHeader) {
     const Rect headerRect = TouchHeaderBackButton::headerRect(renderer, mappedInput);
     const auto backLayout = TouchHeaderBackButton::layout(headerRect);
@@ -431,33 +499,12 @@ void OpdsBookBrowserActivity::buildBrowsingScreen(UiApp::ScreenType& screen) {
     return;
   }
 
-  // Transient per-render: sized once via reserve, points into `entries`
-  // strings, freed on scope exit.
-  std::vector<fui::ListItem> items;
-  items.reserve(entryCount);
-  for (size_t i = 0; i < entryCount; ++i) {
-    const auto& entry = entries[i];
-    fui::ListItem item;
-    item.label = entry.title.c_str();
-    if (hasSyncRow && i == 0) {
-      item.subtitle = tr(STR_OPDS_SYNC_MISSING_HINT);
-    } else if (entry.type == OpdsEntryType::BOOK && !entry.author.empty()) {
-      item.subtitle = entry.author.c_str();
-    }
-    if (entry.type == OpdsEntryType::NAVIGATION && !(hasSyncRow && i == 0)) {
-      item.value = ">";
-      if (entry.count >= 0) {
-        snprintf(countLabels[i].data(), countLabels[i].size(), "(%ld) >", static_cast<long>(entry.count));
-        item.value = countLabels[i].data();
-      }
-    }
-    item.actionValue = static_cast<int16_t>(items.size());
-    items.push_back(item);
-  }
-
+  // Rows are formatted on demand for the visible viewport only, so a redraw
+  // never allocates; after a download the heap can be too fragmented for it.
   fui::ListProps props;
-  props.items = items.data();
-  props.count = static_cast<uint16_t>(items.size());
+  props.rowProvider = &OpdsBookBrowserActivity::provideRow;
+  props.rowProviderCtx = this;
+  props.count = static_cast<uint16_t>(entryCount);
   props.selectedIndex = static_cast<int16_t>(selectorIndex);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
@@ -467,6 +514,67 @@ void OpdsBookBrowserActivity::buildBrowsingScreen(UiApp::ScreenType& screen) {
   topIndex = scrollListBy(topIndex, 0, visibleRows, static_cast<int>(entryCount));  // clamp to range
   props.topIndex = static_cast<uint16_t>(topIndex);
   screen.list(props);
+}
+
+void OpdsBookBrowserActivity::provideRow(void* user, const uint16_t index, fui::ListItem& item) {
+  auto& self = *static_cast<OpdsBookBrowserActivity*>(user);
+  const auto& entry = self.entries[index];
+  const bool syncRow = self.hasSyncRow && index == 0;
+  item.label = entry.title.c_str();
+  if (syncRow) {
+    item.subtitle = tr(STR_OPDS_SYNC_MISSING_HINT);
+  } else if (entry.type == OpdsEntryType::BOOK && !entry.author.empty()) {
+    item.subtitle = entry.author.c_str();
+  }
+  if (entry.type == OpdsEntryType::NAVIGATION && !syncRow) {
+    item.value = ">";
+    if (entry.count >= 0) {
+      auto& label = self.countLabels[index];
+      snprintf(label.data(), label.size(), "(%ld) >", static_cast<long>(entry.count));
+      item.value = label.data();
+    }
+  }
+  item.actionValue = static_cast<int16_t>(index);
+}
+
+void OpdsBookBrowserActivity::buildDescriptionScreen(UiApp::ScreenType& screen) {
+  screenHeader(screen, false);
+  const auto& book = entries[selectorIndex];
+  const auto& theme = screen.theme();
+  const int16_t lh = screen.target().lineHeight(theme.bodyText.font);
+  const int16_t gap = theme.spaceMd;
+  fui::TextStyle title = theme.bodyText;
+  title.maxLines = 2;
+  screen.target().text(screen.takeTop(lh * 2, gap), book.title.c_str(), title);
+  if (!book.author.empty()) screen.target().text(screen.takeTop(lh, gap), book.author.c_str(), theme.smallText);
+  const fui::Rect actions = screen.takeBottom(theme.rowHeight, gap);
+  const fui::Rect body = screen.body().inset(fui::Insets{0, gap, 0, gap});
+  if (descriptionWidth != body.width) {
+    descriptionLines = renderer.wrappedText(uiScaleSpec().bodyFontId,
+                                            (book.unsupportedAcquisition || book.href.empty()) && !book.description[0]
+                                                ? tr(STR_NOT_SUPPORTED)
+                                                : book.description.data(),
+                                            body.width, 64);
+    descriptionWidth = body.width;
+  }
+  descriptionRows = std::max(1, static_cast<int>(body.height / lh));
+  descriptionTop = scrollListBy(descriptionTop, 0, descriptionRows, static_cast<int>(descriptionLines.size()));
+  for (int row = 0; row < descriptionRows && descriptionTop + row < static_cast<int>(descriptionLines.size()); ++row) {
+    screen.target().text(fui::Rect{body.x, static_cast<int16_t>(body.y + row * lh), body.width, lh},
+                         descriptionLines[descriptionTop + row].c_str(), theme.bodyText);
+  }
+  const int16_t width = actions.width / 3;
+  const char* labels[] = {tr(STR_PREV_PAGE), tr(STR_DOWNLOAD), tr(STR_NEXT_PAGE)};
+  for (int i = 0; i < 3; ++i) {
+    fui::ButtonProps button;
+    button.label = labels[i];
+    button.action = ACTION_DESCRIPTION;
+    button.value = i - 1;
+    button.enabled = i == 1 ? (!book.unsupportedAcquisition && !book.href.empty())
+                            : (i == 0 ? descriptionTop > 0
+                                      : descriptionTop + descriptionRows < static_cast<int>(descriptionLines.size()));
+    screen.button(button, fui::Rect{static_cast<int16_t>(actions.x + i * width), actions.y, width, actions.height});
+  }
 }
 
 void OpdsBookBrowserActivity::buildDownloadScreen(UiApp::ScreenType& screen) {
@@ -533,7 +641,9 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   switch (state) {
     case BrowserState::BROWSING: {
       const char* confirmLabel = (hasSyncRow && selectorIndex == 0) ? tr(STR_OPDS_SYNC)
-                                 : (entryCount > 0 && entries[selectorIndex].type == OpdsEntryType::BOOK)
+                                 : (entryCount > 0 && entries[selectorIndex].type == OpdsEntryType::BOOK &&
+                                    !entries[selectorIndex].description[0] && entries[selectorIndex].selfHref.empty() &&
+                                    !entries[selectorIndex].indirect && !entries[selectorIndex].unsupportedAcquisition)
                                      ? tr(STR_DOWNLOAD)
                                      : tr(STR_OPEN);
       const char* searchLabel = (!searchTemplate.empty() && selectorIndex == 0) ? tr(STR_SEARCH) : tr(STR_DIR_UP);
@@ -541,6 +651,10 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
           mappedInput.mapLabels(mappedInput.withBackArrow(tr(STR_BACK)), confirmLabel, searchLabel, tr(STR_DIR_DOWN));
       break;
     }
+    case BrowserState::DESCRIPTION:
+      labels = mappedInput.mapLabels(mappedInput.withBackArrow(tr(STR_BACK)), tr(STR_DOWNLOAD), tr(STR_PREV_PAGE),
+                                     tr(STR_NEXT_PAGE));
+      break;
     case BrowserState::DOWNLOADING:
       labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
       break;
@@ -554,14 +668,19 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   uiReady = false;
-  app.render();
+  renderUiApp(app, uiTarget);
   uiReady = true;
   renderer.displayBuffer(screenTransitionRefresh.modeFor(static_cast<uint8_t>(state)));
 }
 
 void OpdsBookBrowserActivity::showLoadingBeforeFetch() {
-  state = BrowserState::LOADING;
-  statusMessage = tr(STR_LOADING);
+  {
+    RenderLock lock;
+    state = BrowserState::LOADING;
+    statusMessage = tr(STR_LOADING);
+    clearEntries();
+    selectorIndex = 0;
+  }
   if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
     LOG_ERR("OPDS", "Loading screen could not be rendered before feed fetch");
     requestUpdate(true);
@@ -569,6 +688,7 @@ void OpdsBookBrowserActivity::showLoadingBeforeFetch() {
 }
 
 void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
+  RenderLock lock;  // Loading is visible; publish the new feed and final state together.
   if (!ensureEntryBuffer()) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_MEMORY_ERROR);
@@ -587,13 +707,17 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
     appendEntry(
         OpdsEntry{OpdsEntryType::BOOK, "A Room of One's Own", "Virginia Woolf", "/books/a-room-of-ones-own.epub", ""});
     appendEntry(OpdsEntry{OpdsEntryType::BOOK, "Frankenstein", "Mary Shelley", "/books/frankenstein.epub", ""});
+    snprintf(entries[1].description.data(), entries[1].description.size(), "%s",
+             "A visitor to a distant world must learn to understand its people. "
+             "This catalog description can be read before choosing Download. "
+             "Use the page buttons or swipe to read the rest at larger text sizes.");
   } else {
     appendEntry(
         OpdsEntry{OpdsEntryType::BOOK, "The Dispossessed", "Ursula K. Le Guin", "/books/the-dispossessed.epub", ""});
     appendEntry(OpdsEntry{OpdsEntryType::BOOK, "Kindred", "Octavia E. Butler", "/books/kindred.epub", ""});
     appendEntry(OpdsEntry{OpdsEntryType::BOOK, "The Time Machine", "H. G. Wells", "/books/the-time-machine.epub", ""});
   }
-  addSyncRow(UrlUtils::buildUrl(server.url, path));
+  addSyncRow(UrlUtils::buildUrl(server.url, path), false);
 
   selectorIndex = 0;
   topIndex = 0;
@@ -610,49 +734,82 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
   }
 
   clearEntries();
+  retryDownload.reset();
   const std::string url = UrlUtils::buildUrl(server.url, path);
   // Keep the normalized server URL alive for the synchronous fetch so
   // HttpDownloader can scope Basic auth even for legacy scheme-less entries.
   const std::string authorizationOrigin = UrlUtils::ensureProtocol(server.url);
   LOG_DBG("OPDS", "Fetching: %s", UrlUtils::forLog(url).c_str());
-  retryDownload.reset();
-  OpdsParser parser(entries.get(), MAX_OPDS_FEED_ENTRIES);
+  // Transient failures (no response, a body cut short, 408/429/5xx) are
+  // retried, as KOReader's library-sync does; each attempt gets a fresh parser
+  // and a cleared entry array.
+  std::optional<OpdsFeedParser> attemptParser;
+  HttpRequestDiagnostics diagnostics;
+  auto result = HttpDownloader::OK;
   for (int attempt = 1;; ++attempt) {
-    int responseStatus = 0;
-    HttpDownloader::DownloadError result;
-    {
-      OpdsParserStream stream{parser};
+    attemptParser.emplace(entries.get(), MAX_OPDS_FEED_ENTRIES);
+    OpdsFeedParser& attemptFeed = *attemptParser;
+    attemptFeed.setPreferredLanguage(I18n::getInstance().getCode());
+    result = HttpDownloader::OK;
+    if (attemptFeed) {
       HttpDownloader::DownloadOptions downloadOptions;
       downloadOptions.transport = HttpDownloader::Transport::WOLFSSL;
       downloadOptions.authorizationOrigin = authorizationOrigin;
-      downloadOptions.responseStatus = &responseStatus;
       result = HttpDownloader::streamUrl(
-          url, [&stream](const uint8_t* data, const size_t len) { return stream.write(data, len) == len; }, nullptr,
-          server.username, server.password, std::move(downloadOptions));
+          url, [&attemptFeed](const uint8_t* data, const size_t len) { return attemptFeed.write(data, len) == len; },
+          nullptr, server.username, server.password, std::move(downloadOptions), &diagnostics);
     }
-    if (result == HttpDownloader::OK) break;
-
-    if (attempt >= FEED_ATTEMPTS || !HttpDownloader::isRetryable(result, responseStatus)) {
-      // Drop any entries parsed from the failed attempt so their strings do
-      // not outlive the error.
-      for (size_t i = 0; i < parser.getEntryCount(); ++i) entries[i] = OpdsEntry{};
-      state = BrowserState::ERROR;
-      errorMessage = withHttpStatus(tr(STR_FETCH_FEED_FAILED), responseStatus);
-      requestUpdate();
-      return;
+    if (result == HttpDownloader::OK || !attemptFeed || attempt >= FEED_ATTEMPTS ||
+        !HttpDownloader::isRetryable(result, diagnostics.status)) {
+      break;
     }
     LOG_ERR("OPDS", "Feed attempt %d/%d failed (result %d, status %d); retrying", attempt, FEED_ATTEMPTS,
-            static_cast<int>(result), responseStatus);
+            static_cast<int>(result), diagnostics.status);
     // Free what the partial attempt parsed before the next one allocates again.
-    for (size_t i = 0; i < parser.getEntryCount(); ++i) entries[i] = OpdsEntry{};
-    parser.clear();
+    attemptParser.reset();
+    clearEntries();
     delay(RETRY_BACKOFF_MS * attempt);
   }
+  OpdsFeedParser& parser = *attemptParser;
+  parser.flush();  // Finalize before publishing or discarding the bounded entry array.
 
-  if (!parser) {
+  // A parser rejection is the cause of a callback-aborted download, rather
+  // than a server/connectivity error. Do not hide it behind the HTTP result.
+  if (!parser && (result == HttpDownloader::OK || diagnostics.callbackRejected)) {
+    clearEntries();
     state = BrowserState::ERROR;
-    errorMessage = parser.getErrorReason() == OpdsParserError::BUFFER_MEMORY ? tr(STR_OPDS_FEED_BUFFER_MEMORY_ERROR)
-                                                                             : tr(STR_PARSE_FEED_FAILED);
+    if (parser.getErrorReason() == OpdsParserError::BUFFER_MEMORY) {
+      errorMessage = tr(STR_OPDS_FEED_BUFFER_MEMORY_ERROR);
+    } else if (parser.getErrorReason() == OpdsParserError::PARSER_MEMORY) {
+      errorMessage = tr(STR_MEMORY_ERROR);
+    } else {
+      errorMessage = tr(STR_PARSE_FEED_FAILED);
+    }
+    requestUpdate();
+    return;
+  }
+
+  if (result != HttpDownloader::OK) {
+    clearEntries();
+    state = BrowserState::ERROR;
+    switch (classifyFeedFailure(diagnostics,
+                                result == HttpDownloader::HTTP_ERROR || result == HttpDownloader::UNAUTHORIZED)) {
+      case OpdsFeedError::Unauthorized:
+        errorMessage = tr(STR_FEED_UNAUTHORIZED);
+        break;
+      case OpdsFeedError::Redirected:
+        errorMessage = tr(STR_FEED_REDIRECTED);
+        break;
+      case OpdsFeedError::ServerError:
+        errorMessage = tr(STR_FEED_SERVER_ERROR);
+        break;
+      case OpdsFeedError::Unreachable:
+        errorMessage = tr(STR_FEED_UNREACHABLE);
+        break;
+      default:
+        errorMessage = tr(STR_FETCH_FEED_FAILED);
+        break;
+    }
     requestUpdate();
     return;
   }
@@ -684,7 +841,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
         std::string(mappedInput.resolveLabel(mappedInput.withNextPageArrow(tr(STR_NEXT_PAGE)))), "", nextUrl, ""});
     if (!hasNextPageRow) LOG_DBG("OPDS", "No room for next-page entry");
   }
-  addSyncRow(url);
+  addSyncRow(url, parser.hasGroupedPublications());
 
   selectorIndex = 0;
   topIndex = 0;
@@ -696,6 +853,7 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
 bool OpdsBookBrowserActivity::ensureEntryBuffer() {
   if (entries) return true;
   entries = makeUniqueNoThrow<OpdsEntry[]>(OPDS_BROWSER_ENTRY_CAPACITY);
+  if (!entries) LOG_ERR("OPDS", "Cannot allocate catalog (%zu bytes)", sizeof(OpdsEntry) * OPDS_BROWSER_ENTRY_CAPACITY);
   return entries != nullptr;
 }
 
@@ -703,7 +861,9 @@ void OpdsBookBrowserActivity::clearEntries() {
   // The app's interaction table still references the old row indices until
   // the next render, so stop routing touches while clearing the backing data.
   uiReady = false;
-  for (size_t i = 0; entries && i < entryCount; ++i) {
+  // A failed fetch can populate slots before entryCount is published. Clear
+  // the full bounded array so partial-feed strings cannot survive a retry.
+  for (size_t i = 0; entries && i < OPDS_BROWSER_ENTRY_CAPACITY; ++i) {
     entries[i] = OpdsEntry{};
   }
   entryCount = 0;
@@ -723,19 +883,18 @@ void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry, const bool
   if (!pageLink) navigationHistory.push_back(HistoryEntry{currentPath, feedRootPath, feedTitle});
   // Resolve to a full URL so sub-sub-navigation retains parent path context
   const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
-  currentPath = UrlUtils::buildUrl(feedUrl, entry.href);
+  currentPath = UrlUtils::resolveReference(feedUrl, entry.href);
   if (!pageLink) {
     feedRootPath = currentPath;
     feedTitle = entry.title;
   }
 
-  clearEntries();
-  selectorIndex = 0;
   showLoadingBeforeFetch();
   fetchFeed(currentPath);
 }
 
 void OpdsBookBrowserActivity::navigateBack() {
+  catalogReleasedForDownload = false;
   if (navigationHistory.empty()) {
     onGoHome();
   } else {
@@ -744,8 +903,6 @@ void OpdsBookBrowserActivity::navigateBack() {
     currentPath = std::move(previous.path);
     feedRootPath = std::move(previous.feedRoot);
     feedTitle = std::move(previous.feedTitle);
-    clearEntries();
-    selectorIndex = 0;
     showLoadingBeforeFetch();
     fetchFeed(currentPath);
   }
@@ -753,8 +910,9 @@ void OpdsBookBrowserActivity::navigateBack() {
 
 // Offers "Sync missing books" as the first row when the feed has a catalogue
 // to sync: the feed itself when it lists books (from its first page), or the
-// root's "All Books" entry when it only lists sub-catalogues.
-void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
+// page's "All Books" entry when it only lists sub-catalogues. An OPDS 2 page
+// whose books are group previews is not a catalogue of its own.
+void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl, const bool groupedFeed) {
   hasSyncRow = false;
   if (!entries || entryCount == 0 || entryCount >= OPDS_BROWSER_ENTRY_CAPACITY) return;
 
@@ -762,8 +920,9 @@ void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
   bool hasBooks = false;
   for (size_t i = 0; i < entryCount; ++i) {
     if (entries[i].type == OpdsEntryType::BOOK) {
-      hasBooks = true;
-      break;
+      hasBooks = !groupedFeed;
+      if (hasBooks) break;
+      continue;
     }
     if (!allBooks && isAllBooksEntry(entries[i])) allBooks = &entries[i];
   }
@@ -771,7 +930,7 @@ void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
     syncFeedUrl = UrlUtils::buildUrl(server.url, feedRootPath);
     syncFeedTitle = feedTitle;
   } else if (allBooks) {
-    syncFeedUrl = UrlUtils::buildUrl(pageUrl, allBooks->href);
+    syncFeedUrl = UrlUtils::resolveReference(pageUrl, allBooks->href);
     syncFeedTitle = allBooks->title;
   } else {
     return;
@@ -788,17 +947,23 @@ void OpdsBookBrowserActivity::addSyncRow(const std::string& pageUrl) {
 void OpdsBookBrowserActivity::launchLibrarySync() {
   if (syncFeedUrl.empty()) return;
   // The sync's HTTPS fetches run while this activity stays alive underneath.
-  // On X3/X4 a loaded page (the entry array plus up to 50 books' strings,
-  // ~6-13 KB) was enough to starve them: the parser or the TLS handshake ran
+  // On X3/X4 a loaded page (the bounded entry array with its descriptions,
+  // ~20 KB) is enough to starve them: the parser or the TLS handshake runs
   // out of memory. Free the page first, before the sync screen allocates,
   // and reload it when the sync screen closes.
-  clearEntries();
-  entries.reset();
-  state = BrowserState::LOADING;
-  statusMessage = tr(STR_LOADING);
+  {
+    RenderLock lock;
+    clearEntries();
+    entries.reset();
+    std::vector<std::string>().swap(descriptionLines);
+    descriptionWidth = descriptionTop = 0;
+    state = BrowserState::LOADING;
+    statusMessage = tr(STR_LOADING);
+  }
   auto sync = makeUniqueNoThrow<OpdsLibrarySyncActivity>(renderer, mappedInput, server, syncFeedUrl, syncFeedTitle);
   if (!sync) {
     LOG_ERR("OPDS", "Cannot allocate library sync");
+    RenderLock lock;
     state = BrowserState::ERROR;
     errorMessage = tr(STR_MEMORY_ERROR);
     requestUpdate();
@@ -812,42 +977,176 @@ void OpdsBookBrowserActivity::launchLibrarySync() {
   });
 }
 
-void OpdsBookBrowserActivity::requestDownload(const OpdsEntry& book) {
-  std::string path = SETTINGS.opdsDownloadFolder;
-  path += '/';
+bool OpdsBookBrowserActivity::loadPublication(OpdsEntry& book, const std::string& url) {
+  auto detail = makeUniqueNoThrow<OpdsEntry>();
+  auto parser = detail ? makeUniqueNoThrow<OpdsJsonParser>(detail.get(), 1, true) : nullptr;
+  if (!parser) {
+    LOG_ERR("OPDS", "Cannot allocate publication parser");
+    return false;
+  }
+  parser->setPreferredLanguage(I18n::getInstance().getCode());
+  HttpDownloader::DownloadOptions options;
+  options.transport = HttpDownloader::Transport::WOLFSSL;
+  const std::string authorizationOrigin = UrlUtils::ensureProtocol(server.url);
+  options.authorizationOrigin = authorizationOrigin;
+  size_t received = 0;
+  const auto result = HttpDownloader::streamUrl(
+      url,
+      [&](const uint8_t* data, size_t length) {
+        // A metadata document is small; do not accept an unbounded mistaken download.
+        if (length > 256 * 1024 - received) return false;
+        received += length;
+        return parser->write(data, length) == length;
+      },
+      nullptr, server.username, server.password, std::move(options));
+  parser->flush();
+  if (result != HttpDownloader::OK || parser->error() || parser->getEntryCount() != 1) {
+    LOG_ERR("OPDS", "Failed to load publication details");
+    return false;
+  }
+  if (!detail->title.empty()) book.title = std::move(detail->title);
+  if (!detail->author.empty()) book.author = std::move(detail->author);
+  if (detail->description[0]) book.description = detail->description;
+  if (!detail->href.empty()) {
+    book.href = UrlUtils::resolveReference(url, detail->href);
+    book.indirect = detail->indirect;
+    book.unsupportedAcquisition = detail->unsupportedAcquisition;
+  }
+  book.selfHref.clear();
+  return true;
+}
+
+void OpdsBookBrowserActivity::openPublication(OpdsEntry& book) {
+  if (!book.selfHref.empty()) {
+    const std::string url = UrlUtils::resolveReference(UrlUtils::buildUrl(server.url, currentPath), book.selfHref);
+    {
+      RenderLock lock;
+      state = BrowserState::LOADING;
+      statusMessage = tr(STR_LOADING);
+      uiReady = false;
+    }
+    requestUpdateAndWait();
+    RenderLock lock;
+    loadPublication(book, url);
+  }
+  RenderLock lock;
+  descriptionLines.clear();
+  descriptionWidth = descriptionTop = 0;
+  state = BrowserState::DESCRIPTION;
+  uiReady = false;
+  requestUpdate();
+}
+
+void OpdsBookBrowserActivity::requestDownload(const OpdsEntry& selectedBook) {
+  if (selectedBook.unsupportedAcquisition || selectedBook.href.empty()) return;
+  auto resolved = makeUniqueNoThrow<OpdsEntry>();
+  if (!resolved) {
+    LOG_ERR("OPDS", "Cannot allocate selected publication");
+    return;
+  }
+  *resolved = selectedBook;
+  if (resolved->indirect) {
+    {
+      RenderLock lock;
+      state = BrowserState::LOADING;
+      statusMessage = tr(STR_LOADING);
+      uiReady = false;
+    }
+    requestUpdateAndWait();
+    RenderLock lock;
+    std::string baseUrl = UrlUtils::buildUrl(server.url, currentPath);
+    for (int hop = 0; resolved->indirect && hop < 4; ++hop) {
+      const std::string url = UrlUtils::resolveReference(baseUrl, resolved->href);
+      if (!loadPublication(*resolved, url)) break;
+      baseUrl = url;
+    }
+    if (resolved->indirect || resolved->unsupportedAcquisition || resolved->href.empty()) {
+      state = BrowserState::ERROR;
+      errorMessage = tr(STR_NOT_SUPPORTED);
+      requestUpdate();
+      return;
+    }
+  }
+  const auto& book = *resolved;
+  std::string path;
+  if (!OpdsDownloadFolder::normalize(OpdsDownloadFolder::effective(server.downloadFolder, SETTINGS.opdsDownloadFolder),
+                                     path)) {
+    LOG_ERR("OPDS", "Invalid download folder");
+    RenderLock lock;
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_OPDS_INVALID_FOLDER);
+    requestUpdate();
+    return;
+  }
+  if (path != "/") path += '/';
   path += StringUtils::sanitizeFilename(buildBookFilenameBase(book, server.filenameFormat));
   path += ".epub";
+  const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
+  DownloadRequest request{UrlUtils::resolveReference(feedUrl, book.href), book.title, std::move(path)};
+  if (server.useServerFilename) {
+    downloadBook(std::move(request));
+    return;
+  }
   // Recover an interrupted replacement before deciding whether the book exists.
-  if (!DownloadFileSwap::recover(path)) {
+  if (!DownloadFileSwap::recover(request.filename)) {
     state = BrowserState::ERROR;
     errorMessage = tr(STR_DOWNLOAD_FAILED);
     requestUpdate();
     return;
   }
-  if (!Storage.exists(path.c_str())) {
-    downloadBook(book, path);
+  if (!Storage.exists(request.filename.c_str())) {
+    downloadBook(std::move(request));
     return;
   }
-  auto dialog =
-      makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, std::string(tr(STR_REPLACE)) + "?", book.title);
-  if (!dialog) {
-    LOG_ERR("OPDS", "Cannot allocate overwrite dialog");
-    return;
-  }
-  const int bookIndex = selectorIndex;
-  startActivityForResult(std::move(dialog), [this, bookIndex, path = std::move(path)](const ActivityResult& result) {
-    if (result.isCancelled || !entries || bookIndex < 0 || bookIndex >= static_cast<int>(entryCount)) return;
-    downloadBook(entries[bookIndex], path);
-  });
+  // Copy the destination before moving the request (argument evaluation order).
+  const std::string destination = request.filename;
+  confirmDownload(std::move(request), destination);
 }
 
-void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::string& filename) {
+void OpdsBookBrowserActivity::confirmDownload(DownloadRequest request, const std::string& destination) {
+  RenderLock lock;
+  state = BrowserState::BROWSING;
+  auto dialog =
+      makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, std::string(tr(STR_REPLACE)) + "?", destination);
+  if (!dialog) {
+    LOG_ERR("OPDS", "Cannot allocate overwrite dialog");
+    state = BrowserState::ERROR;
+    errorMessage = tr(STR_MEMORY_ERROR);
+    requestUpdate();
+    return;
+  }
+  // A refreshed catalog may reorder or remove rows. Approval must still apply
+  // to the original URL and filename, never the book now at the same index.
+  startActivityForResult(std::move(dialog),
+                         [this, request = std::move(request), destination](const ActivityResult& result) mutable {
+                           if (result.isCancelled) {
+                             requestUpdate();
+                             return;
+                           }
+                           downloadBook(std::move(request), destination);
+                         });
+}
+
+void OpdsBookBrowserActivity::downloadBook(DownloadRequest request, const std::string& approvedPath) {
   retryDownload.reset();
-  state = BrowserState::DOWNLOADING;
-  statusMessage = book.title;
-  downloadProgress = downloadTotal = 0;
-  cancelDownload = false;
-  goHomeAfterCancel = false;
+  downloadApprovedPath = approvedPath;
+  downloadStatus = 0;
+  {
+    RenderLock lock;
+    state = BrowserState::DOWNLOADING;
+    statusMessage = request.title;
+    downloadProgress = downloadTotal = 0;
+    cancelDownload = false;
+    goHomeAfterCancel = false;
+    downloadSelectorIndex = selectorIndex;
+    downloadTopIndex = topIndex;
+    catalogReleasedForDownload = true;
+    clearEntries();
+    // clearEntries() alone leaves the fixed entry/description array allocated.
+    entries.reset();
+    std::vector<std::string>().swap(descriptionLines);
+    descriptionWidth = descriptionTop = 0;
+  }
   requestUpdate(true);
 
 #ifdef SIMULATOR
@@ -857,23 +1156,22 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
   return;
 #endif
 
-  // Build full download URL relative to the current feed, not the root server URL
-  const std::string feedUrl = UrlUtils::buildUrl(server.url, currentPath);
-  std::string downloadUrl = UrlUtils::buildUrl(feedUrl, book.href);
   // This temporary is intentionally retained until downloadToFile returns;
   // DownloadOptions borrows it to avoid copying the server URL per transfer.
   const std::string authorizationOrigin = UrlUtils::ensureProtocol(server.url);
-  const char* downloadFolder = SETTINGS.opdsDownloadFolder;
-  bool useDownloadFolder = downloadFolder[0] != '\0';
-  if (useDownloadFolder && !Storage.exists(downloadFolder) && !Storage.mkdir(downloadFolder)) {
-    LOG_ERR("OPDS", "Could not create download folder %s", downloadFolder);
+  // The request path was resolved before any overwrite prompt. Never re-read
+  // the global setting here or a retry could create a different directory.
+  const std::string downloadFolder = FsHelpers::extractFolderPath(request.filename);
+  if (downloadFolder != "/" && !Storage.mkdir(downloadFolder.c_str()) && !Storage.exists(downloadFolder.c_str())) {
+    LOG_ERR("OPDS", "Could not create download folder %s", downloadFolder.c_str());
+    RenderLock lock;
     state = BrowserState::ERROR;
     errorMessage = tr(STR_DOWNLOAD_FAILED);
     requestUpdate();
     return;
   }
 
-  LOG_DBG("OPDS", "Downloading: %s -> %s", UrlUtils::forLog(downloadUrl).c_str(), filename.c_str());
+  LOG_DBG("OPDS", "Downloading: %s -> %s", UrlUtils::forLog(request.url).c_str(), request.filename.c_str());
 
   bool cancelRequested = false;
   auto pollCancel = [this, &cancelRequested] {
@@ -902,9 +1200,14 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
   HttpDownloader::DownloadOptions downloadOptions;
   downloadOptions.shouldCancel = pollCancel;
   downloadOptions.bufferSize = OPDS_DOWNLOAD_BUFFER_SIZE;
+  downloadOptions.reserveFullRecord = true;
   downloadOptions.transport = HttpDownloader::Transport::WOLFSSL;
   downloadOptions.authorizationOrigin = authorizationOrigin;
   downloadOptions.stageAsPart = true;
+  std::string resolvedPath;
+  downloadOptions.useServerFilename = server.useServerFilename;
+  downloadOptions.overwriteApprovedPath = approvedPath;
+  downloadOptions.resolvedPath = &resolvedPath;
   downloadOptions.checkFreeSpace = true;
   downloadOptions.validate = [](const std::string& path) {
     ZipFile zip(path);
@@ -913,14 +1216,13 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
   };
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = 0;
-  int responseStatus = 0;
-  downloadOptions.responseStatus = &responseStatus;
+  downloadOptions.responseStatus = &downloadStatus;
 
   HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
   for (int attempt = 1;; ++attempt) {
     lastRenderedPercent = -1;
     result = HttpDownloader::downloadToFile(
-        downloadUrl, filename,
+        request.url, request.filename,
         [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
           downloadProgress = downloaded;
           downloadTotal = total;
@@ -934,10 +1236,10 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
         },
         &cancelRequested, server.username, server.password, downloadOptions);
     if (result == HttpDownloader::OK || attempt >= DOWNLOAD_ATTEMPTS ||
-        !HttpDownloader::isRetryable(result, responseStatus)) {
+        !HttpDownloader::isRetryable(result, downloadStatus)) {
       break;
     }
-    LOG_ERR("OPDS", "Download attempt %d/%d failed (status %d); retrying", attempt, DOWNLOAD_ATTEMPTS, responseStatus);
+    LOG_ERR("OPDS", "Download attempt %d/%d failed (status %d); retrying", attempt, DOWNLOAD_ATTEMPTS, downloadStatus);
     downloadProgress = downloadTotal = 0;
     requestUpdate(true);
     delay(RETRY_BACKOFF_MS);
@@ -948,9 +1250,25 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
     }
   }
 
+  // The downloader has closed TLS and file handles before the catalog reload.
+  finishDownload(std::move(request), result, resolvedPath);
+}
+
+void OpdsBookBrowserActivity::finishDownload(DownloadRequest request, const HttpDownloader::DownloadError result,
+                                             const std::string& resolvedPath) {
   if (result == HttpDownloader::OK) {
-    clearBookCache(filename);
-    state = BrowserState::BROWSING;
+    if (!clearBookCachePreservingUserState(resolvedPath, true)) {
+      LOG_ERR("OPDS", "File saved but cache refresh failed: %s", resolvedPath.c_str());
+      RenderLock lock;
+      state = BrowserState::ERROR;
+      errorMessage = tr(STR_DOWNLOAD_FAILED);
+      requestUpdate();
+      return;
+    }
+    restoreCatalogAfterDownload();
+  } else if (result == HttpDownloader::FILE_EXISTS) {
+    restoreCatalogAfterDownload();
+    if (state == BrowserState::BROWSING) confirmDownload(std::move(request), resolvedPath);
   } else if (result == HttpDownloader::ABORTED) {
     LOG_INF("OPDS", "Download cancelled");
     if (goHomeAfterCancel) {
@@ -958,16 +1276,32 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book, const std::str
       return;
     }
     mappedInput.suppressNextBackRelease();
-    state = BrowserState::BROWSING;
+    restoreCatalogAfterDownload();
   } else {
+    RenderLock lock;
     state = BrowserState::ERROR;
     errorMessage = result == HttpDownloader::INSUFFICIENT_SPACE
                        ? std::string(tr(STR_SD_CARD_FULL))
-                       : withHttpStatus(tr(STR_DOWNLOAD_FAILED), responseStatus);
-    // Retry repeats this download; Back returns to the loaded list.
-    retryDownload = makeUniqueNoThrow<OpdsEntry>(book);
-    retryDownloadPath = filename;
+                       : withHttpStatus(tr(STR_DOWNLOAD_FAILED), downloadStatus);
+    // Retry repeats this download; Back returns to the catalog page. A request
+    // without a URL (only the simulator builds one) has nothing to retry.
+    if (!request.url.empty()) {
+      retryApprovedPath = downloadApprovedPath;
+      retryDownload = makeUniqueNoThrow<DownloadRequest>(std::move(request));
+    }
+    requestUpdate();
   }
+}
+
+void OpdsBookBrowserActivity::restoreCatalogAfterDownload() {
+  showLoadingBeforeFetch();
+  fetchFeed(currentPath);
+  RenderLock lock;
+  if (state != BrowserState::BROWSING) return;  // Keep the fetch/allocation error and Retry path.
+  selectorIndex = std::clamp(downloadSelectorIndex, 0, static_cast<int>(entryCount) - 1);
+  topIndex = scrollListBy(downloadTopIndex, 0, visibleRows, static_cast<int>(entryCount));
+  catalogReleasedForDownload = false;
+  uiReady = false;
   requestUpdate();
 }
 
@@ -993,33 +1327,15 @@ void OpdsBookBrowserActivity::performSearch(const std::string& query) {
     return;
   }
 
-  auto urlEncode = [](const std::string& s) {
-    std::string out;
-    out.reserve(s.size() * 3);
-    for (unsigned char c : s) {
-      if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
-        out += static_cast<char>(c);
-      else {
-        char buf[4];
-        snprintf(buf, sizeof(buf), "%%%02X", c);
-        out += buf;
-      }
-    }
-    return out;
-  };
-
-  std::string url = searchTemplate;
-  const std::string placeholder = "{searchTerms}";
-  const size_t pos = url.find(placeholder);
-  if (pos != std::string::npos) url.replace(pos, placeholder.length(), urlEncode(query));
+  const std::string expanded = expandOpdsSearchTemplate(searchTemplate, opdsPercentEncode(query));
+  const std::string feedUrl = UrlUtils::buildUrl(UrlUtils::ensureProtocol(server.url), currentPath);
+  const std::string url = UrlUtils::resolveReference(feedUrl, expanded);
 
   navigationHistory.push_back(HistoryEntry{currentPath, feedRootPath, feedTitle});
   currentPath = url;
   feedRootPath = url;
   feedTitle = query;
 
-  clearEntries();
-  selectorIndex = 0;
   showLoadingBeforeFetch();
   fetchFeed(url);
 }
@@ -1043,12 +1359,16 @@ void OpdsBookBrowserActivity::launchWifiSelection() {
 
 void OpdsBookBrowserActivity::onWifiSelectionComplete(const bool connected) {
   if (connected) {
-    showLoadingBeforeFetch();
-    fetchFeed(currentPath);
+    if (catalogReleasedForDownload) {
+      restoreCatalogAfterDownload();
+    } else {
+      showLoadingBeforeFetch();
+      fetchFeed(currentPath);
+    }
   } else {
     // Leave WiFi up; onExit's silent reboot handles teardown without fragmenting.
     state = BrowserState::ERROR;
-    errorMessage = tr(STR_WIFI_CONN_FAILED);
+    errorMessage = tr(STR_CONNECTION_FAILED);
     requestUpdate();
   }
 }

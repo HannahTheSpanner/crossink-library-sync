@@ -1,12 +1,15 @@
 #include "OpdsLibrarySyncActivity.h"
 
 #include <Arduino.h>
+#include <DownloadFileSwap.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <LibraryBuilder.h>
 #include <LibraryIndexFile.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <OpdsFeedParser.h>
+#include <OpdsJsonParser.h>
 #include <ZipFile.h>
 
 #include <algorithm>
@@ -19,9 +22,10 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
-#include "network/DownloadFileSwap.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
+#include "util/OpdsDownloadFolder.h"
+#include "util/OpdsFeedError.h"
 #include "util/StringUtils.h"
 #include "util/UrlUtils.h"
 
@@ -42,6 +46,12 @@ constexpr unsigned long DOWNLOAD_PROGRESS_INTERVAL_MS = 10000;
 constexpr unsigned long CATALOGUE_PROGRESS_MIN_UPDATE_MS = 3000;
 constexpr int DOWNLOAD_ATTEMPTS = 2;
 constexpr unsigned long RETRY_BACKOFF_MS = 1000;
+// Queue record link kinds: a direct EPUB, or an OPDS 2 publication document
+// to resolve to one before downloading.
+constexpr char LINK_EPUB[] = "e";
+constexpr char LINK_PUBLICATION[] = "p";
+// A publication document is small; do not accept an unbounded mistaken download.
+constexpr size_t MAX_PUBLICATION_BYTES = 256 * 1024;
 // The low 16 bits of a metadata entry carry the library index ordinal so a
 // metadata match can be checked against the card (the index may be stale).
 constexpr uint64_t ORDINAL_MASK = 0xFFFFULL;
@@ -88,6 +98,42 @@ bool validateEpub(const std::string& path) {
   ZipFile zip(path);
   size_t size = 0;
   return zip.getInflatedFileSize("META-INF/container.xml", &size) && size > 0;
+}
+
+// The OPDS browser's wording for a catalogue page that could not be read,
+// plus the HTTP status when it is the only clue (for example 404).
+void describeFeedFailure(const HttpDownloader::DownloadError result, const OpdsParserError parseError,
+                         const HttpRequestDiagnostics& diagnostics, char* out, const size_t outSize) {
+  if (parseError == OpdsParserError::BUFFER_MEMORY || parseError == OpdsParserError::PARSER_MEMORY) {
+    snprintf(out, outSize, "%s", tr(STR_MEMORY_ERROR));
+    return;
+  }
+  if (parseError != OpdsParserError::NONE && (result == HttpDownloader::OK || diagnostics.callbackRejected)) {
+    snprintf(out, outSize, "%s", tr(STR_PARSE_FEED_FAILED));
+    return;
+  }
+  switch (classifyFeedFailure(diagnostics,
+                              result == HttpDownloader::HTTP_ERROR || result == HttpDownloader::UNAUTHORIZED)) {
+    case OpdsFeedError::Unauthorized:
+      snprintf(out, outSize, "%s", tr(STR_FEED_UNAUTHORIZED));
+      return;
+    case OpdsFeedError::Redirected:
+      snprintf(out, outSize, "%s", tr(STR_FEED_REDIRECTED));
+      return;
+    case OpdsFeedError::ServerError:
+      snprintf(out, outSize, "%s", tr(STR_FEED_SERVER_ERROR));
+      return;
+    case OpdsFeedError::Unreachable:
+      snprintf(out, outSize, "%s", tr(STR_FEED_UNREACHABLE));
+      return;
+    default:
+      break;
+  }
+  if (diagnostics.status > 0 && diagnostics.status != 200) {
+    snprintf(out, outSize, "%s (HTTP %d)", tr(STR_FETCH_FEED_FAILED), diagnostics.status);
+  } else {
+    snprintf(out, outSize, "%s", tr(STR_FETCH_FEED_FAILED));
+  }
 }
 
 #ifdef SIMULATOR
@@ -202,6 +248,14 @@ void OpdsLibrarySyncActivity::onEnter() {
   if (!recordBuffer) {
     LOG_ERR(LOG_TAG, "OOM: record buffer");
     fail(tr(STR_MEMORY_ERROR));
+    return;
+  }
+  // The same folder the browser downloads this server's books to: its own
+  // override, else the shared default.
+  if (!OpdsDownloadFolder::normalize(OpdsDownloadFolder::effective(server.downloadFolder, SETTINGS.opdsDownloadFolder),
+                                     downloadFolder)) {
+    LOG_ERR(LOG_TAG, "Invalid download folder");
+    fail(tr(STR_OPDS_INVALID_FOLDER));
     return;
   }
   requestUpdate();
@@ -532,8 +586,8 @@ void OpdsLibrarySyncActivity::appendLedger(const std::string& identity, const st
 // Catalogue walk
 
 std::string OpdsLibrarySyncActivity::downloadPathFor(const std::string& title, const std::string& author) const {
-  std::string path = SETTINGS.opdsDownloadFolder;
-  path += '/';
+  std::string path = downloadFolder;
+  if (path != "/") path += '/';
   path += StringUtils::sanitizeFilename(
       opds_sync::bookFilenameBase(title, author, server.filenameFormat == OpdsFilenameFormat::TITLE_AUTHOR));
   path += ".epub";
@@ -574,9 +628,15 @@ bool OpdsLibrarySyncActivity::isPresent(const OpdsEntry& entry, const std::strin
 bool OpdsLibrarySyncActivity::onCatalogueEntry(void* context, OpdsEntry& entry) {
   auto* self = static_cast<OpdsLibrarySyncActivity*>(context);
   if (entry.type != OpdsEntryType::BOOK) return true;  // sub-catalogues are not followed
+  // OPDS 2: an indirect acquisition, or a publication listed only by its
+  // details document, is resolved to its EPUB link before downloading, as the
+  // browser does. Purchase and LCP entries never reach the sink.
+  const bool publicationDocument = entry.indirect || entry.href.empty();
+  const std::string& link = entry.href.empty() ? entry.selfHref : entry.href;
+  if (link.empty()) return true;  // counted as an entry without an EPUB
   ++self->pageBooks;
 
-  const std::string absoluteHref = UrlUtils::buildUrl(self->pageUrl, entry.href);
+  const std::string absoluteHref = UrlUtils::resolveReference(self->pageUrl, link);
   if (self->isPresent(entry, absoluteHref)) return true;
 
   char identity[17];
@@ -584,6 +644,8 @@ bool OpdsLibrarySyncActivity::onCatalogueEntry(void* context, OpdsEntry& entry) 
   std::string record;
   record.reserve(absoluteHref.size() + entry.title.size() + entry.author.size() + 24);
   record.append(identity);
+  record.push_back('\t');
+  record.append(publicationDocument ? LINK_PUBLICATION : LINK_EPUB);
   record.push_back('\t');
   appendField(record, absoluteHref);
   record.push_back('\t');
@@ -624,8 +686,9 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   std::string pageNext;
   size_t pageSeen = 0;
   bool pageOk = false;
-  bool outOfMemory = false;
-  int responseStatus = 0;
+  auto result = HttpDownloader::OK;
+  OpdsParserError parseError = OpdsParserError::NONE;
+  HttpRequestDiagnostics diagnostics;
   for (int attempt = 1; attempt <= PAGE_ATTEMPTS && !pageOk; ++attempt) {
     if (attempt > 1) delay(RETRY_BACKOFF_MS * (attempt - 1));
     // Each page opens a fresh HTTPS connection; on X3/X4 the largest free
@@ -640,27 +703,27 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       fail(tr(STR_OPDS_SYNC_STORAGE_ERROR));
       return;
     }
-    OpdsParser parser(&OpdsLibrarySyncActivity::onCatalogueEntry, this);
+    // Sniffs Atom (OPDS 1) or JSON (OPDS 2) and allocates only that parser.
+    OpdsFeedParser parser(&OpdsLibrarySyncActivity::onCatalogueEntry, this);
+    parser.setPreferredLanguage(I18n::getInstance().getCode());
 
 #ifdef SIMULATOR
     const char* simFeed = pagesFetched == 0 ? SIM_PAGE_1 : SIM_PAGE_2;
-    parser.parse(simFeed, strlen(simFeed));
-    const auto result = HttpDownloader::OK;
+    parser.write(reinterpret_cast<const uint8_t*>(simFeed), strlen(simFeed));
+    diagnostics = HttpRequestDiagnostics{};
+    result = HttpDownloader::OK;
 #else
     HttpDownloader::DownloadOptions options;
     options.transport = HttpDownloader::Transport::WOLFSSL;
     options.authorizationOrigin = authorizationOrigin;
     options.shouldCancel = [this] { return pollCancel(); };
-    options.responseStatus = &responseStatus;
-    const auto result = HttpDownloader::streamUrl(
+    result = HttpDownloader::streamUrl(
         pageUrl,
-        [&parser](const uint8_t* data, const size_t len) {
-          parser.write(data, len);
-          return !parser.error();  // stop the transfer as soon as the page is unusable
-        },
-        nullptr, server.username, server.password, std::move(options));
-    if (result == HttpDownloader::OK) parser.flush();
+        // Rejecting the chunk stops the transfer as soon as the page is unusable.
+        [&parser](const uint8_t* data, const size_t len) { return parser.write(data, len) == len; }, nullptr,
+        server.username, server.password, std::move(options), &diagnostics);
 #endif
+    if (result == HttpDownloader::OK) parser.flush();
 
     const bool closed = pageFile.close();
     if (result == HttpDownloader::ABORTED && cancelRequested) {
@@ -677,21 +740,30 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       fail(tr(STR_OPDS_SYNC_STORAGE_ERROR));
       return;
     }
-    if (result == HttpDownloader::OK && !parser.error()) {
+    parseError = parser.getErrorReason();
+    if (result == HttpDownloader::OK && parseError == OpdsParserError::NONE) {
       pageOk = true;
       pageNext = parser.getNextPageUrl();
       pageSeen = parser.getEntriesSeen();
+      if (parser.hasGroupedPublications()) {
+        LOG_INF(LOG_TAG, "Page %u: grouped previews skipped", static_cast<unsigned>(pagesFetched + 1));
+      }
     } else {
-      const OpdsParserError reason = parser.getErrorReason();
-      outOfMemory = reason == OpdsParserError::BUFFER_MEMORY || reason == OpdsParserError::PARSER_MEMORY;
+      const bool outOfMemory =
+          parseError == OpdsParserError::BUFFER_MEMORY || parseError == OpdsParserError::PARSER_MEMORY;
       LOG_ERR(LOG_TAG, "Page %u attempt %d failed (http %d, status %d, parse %d, heap free=%u largest=%u)",
-              static_cast<unsigned>(pagesFetched + 1), attempt, static_cast<int>(result), responseStatus,
-              static_cast<int>(reason), static_cast<unsigned>(ESP.getFreeHeap()),
+              static_cast<unsigned>(pagesFetched + 1), attempt, static_cast<int>(result), diagnostics.status,
+              static_cast<int>(parseError), static_cast<unsigned>(ESP.getFreeHeap()),
               static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      // A rejected login or a missing page will not change on retry. A parser
-      // that ran out of memory may fit once this attempt's connection and
-      // buffers are gone, so it is retried like a network failure.
-      if (result != HttpDownloader::OK && !outOfMemory && !HttpDownloader::isRetryable(result, responseStatus)) break;
+      // A rejected login, a missing page or a malformed feed will not change
+      // on retry. A parser that ran out of memory may fit once this attempt's
+      // connection and buffers are gone, so it is retried like a network
+      // failure.
+      if (!outOfMemory &&
+          (diagnostics.callbackRejected ||
+           (result != HttpDownloader::OK && !HttpDownloader::isRetryable(result, diagnostics.status)))) {
+        break;
+      }
     }
   }
 
@@ -699,12 +771,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     // library-sync stops before downloading anything when the catalogue
     // cannot be read completely; partial results would look like a full sync.
     char message[96];
-    if (outOfMemory) {
-      snprintf(message, sizeof(message), "%s", tr(STR_MEMORY_ERROR));
-    } else {
-      snprintf(message, sizeof(message), responseStatus > 0 && responseStatus != 200 ? "%s (HTTP %d)" : "%s",
-               tr(STR_FETCH_FEED_FAILED), responseStatus);
-    }
+    describeFeedFailure(result, parseError, diagnostics, message, sizeof(message));
     fail(message);
     return;
   }
@@ -717,7 +784,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   catalogueBooks += pageBooks;
   missingBooks += pageMissing;
   unsupportedEntries += pageSeen > pageBooks ? pageSeen - pageBooks : 0;
-  nextPageUrl = pageNext.empty() ? std::string() : UrlUtils::buildUrl(pageUrl, pageNext);
+  nextPageUrl = pageNext.empty() ? std::string() : UrlUtils::resolveReference(pageUrl, pageNext);
 
   if (nextPageUrl.empty()) {
     finishCatalogue();
@@ -775,23 +842,69 @@ void OpdsLibrarySyncActivity::finishCatalogue() {
 // ---------------------------------------------------------------------------
 // Downloads
 
-bool OpdsLibrarySyncActivity::readQueueRecord(std::string& identity, std::string& url, std::string& title,
-                                              std::string& author) {
+bool OpdsLibrarySyncActivity::readQueueRecord(std::string& identity, bool& publicationDocument, std::string& url,
+                                              std::string& title, std::string& author) {
   std::string_view line;
   while (queueReader && queueReader->next(line)) {
-    std::string_view fields[4];
-    if (splitFields(line, fields, 4) < 3 || fields[0].size() != 16 || fields[1].empty()) {
+    std::string_view fields[5];
+    if (splitFields(line, fields, 5) < 4 || fields[0].size() != 16 || fields[1].size() != 1 || fields[2].empty()) {
       LOG_ERR(LOG_TAG, "Skipping malformed queue record");
       ++failed;
       continue;
     }
     identity.assign(fields[0].data(), fields[0].size());
-    url.assign(fields[1].data(), fields[1].size());
-    title.assign(fields[2].data(), fields[2].size());
-    author.assign(fields[3].data(), fields[3].size());
+    publicationDocument = fields[1] == LINK_PUBLICATION;
+    url.assign(fields[2].data(), fields[2].size());
+    title.assign(fields[3].data(), fields[3].size());
+    author.assign(fields[4].data(), fields[4].size());
     return true;
   }
   return false;
+}
+
+// Follows OPDS 2 publication documents to a direct EPUB link, as the browser's
+// loadPublication() does. On success `url` is the EPUB link.
+bool OpdsLibrarySyncActivity::resolvePublication(std::string& url) {
+#ifdef SIMULATOR
+  (void)url;
+  return true;
+#else
+  for (int hop = 0; hop < MAX_PUBLICATION_HOPS; ++hop) {
+    // One entry and its parser, freed before the book download allocates.
+    auto detail = makeUniqueNoThrow<OpdsEntry>();
+    auto parser = detail ? makeUniqueNoThrow<OpdsJsonParser>(detail.get(), 1, true) : nullptr;
+    if (!parser) {
+      LOG_ERR(LOG_TAG, "OOM: publication parser");
+      return false;
+    }
+    parser->setPreferredLanguage(I18n::getInstance().getCode());
+    HttpDownloader::DownloadOptions options;
+    options.transport = HttpDownloader::Transport::WOLFSSL;
+    options.authorizationOrigin = authorizationOrigin;
+    options.shouldCancel = [this] { return pollCancel(); };
+    size_t received = 0;
+    const auto result = HttpDownloader::streamUrl(
+        url,
+        [&parser, &received](const uint8_t* data, const size_t length) {
+          if (length > MAX_PUBLICATION_BYTES - received) return false;
+          received += length;
+          return parser->write(data, length) == length;
+        },
+        nullptr, server.username, server.password, std::move(options));
+    if (result == HttpDownloader::ABORTED) return false;
+    parser->flush();
+    if (result != HttpDownloader::OK || parser->error() || parser->getEntryCount() != 1 || detail->href.empty() ||
+        detail->unsupportedAcquisition) {
+      LOG_ERR(LOG_TAG, "Publication document has no EPUB link (http %d): %s", static_cast<int>(result),
+              UrlUtils::forLog(url).c_str());
+      return false;
+    }
+    url = UrlUtils::resolveReference(url, detail->href);
+    if (!detail->indirect) return true;
+  }
+  LOG_ERR(LOG_TAG, "Publication links nest more than %d deep", MAX_PUBLICATION_HOPS);
+  return false;
+#endif
 }
 
 void OpdsLibrarySyncActivity::downloadNext() {
@@ -799,26 +912,31 @@ void OpdsLibrarySyncActivity::downloadNext() {
   std::string url;
   std::string title;
   std::string author;
-  if (!readQueueRecord(identity, url, title, author)) {
+  bool publicationDocument = false;
+  if (!readQueueRecord(identity, publicationDocument, url, title, author)) {
     finishWith(Phase::DONE);
     return;
   }
   ++queueIndex;
 
   const std::string path = downloadPathFor(title, author);
-  if (!DownloadFileSwap::recover(path)) {
-    ++failed;
-    return;
+  // With Use Server Filename the final name is known only from the response;
+  // the downloader then checks that name (FILE_EXISTS) before writing.
+  if (!server.useServerFilename) {
+    if (!DownloadFileSwap::recover(path)) {
+      ++failed;
+      return;
+    }
+    // Never replace a file: a book that reached this name some other way (or
+    // a catalogue that lists the same book twice) is left as it is.
+    if (Storage.exists(path.c_str())) {
+      ++alreadyPresent;
+      return;
+    }
   }
-  // Never replace a file: a book that reached this name some other way (or a
-  // catalogue that lists the same book twice) is left as it is.
-  if (Storage.exists(path.c_str())) {
-    ++alreadyPresent;
-    return;
-  }
-  const char* folder = SETTINGS.opdsDownloadFolder;
-  if (folder[0] != '\0' && !Storage.exists(folder) && !Storage.mkdir(folder)) {
-    LOG_ERR(LOG_TAG, "Could not create download folder %s", folder);
+  if (downloadFolder != "/" && !downloadFolder.empty() && !Storage.mkdir(downloadFolder.c_str()) &&
+      !Storage.exists(downloadFolder.c_str())) {
+    LOG_ERR(LOG_TAG, "Could not create download folder %s", downloadFolder.c_str());
     fail(tr(STR_DOWNLOAD_FAILED));
     return;
   }
@@ -830,6 +948,22 @@ void OpdsLibrarySyncActivity::downloadNext() {
     currentProgress = currentTotal = 0;
   }
   requestUpdate(true);
+
+  if (publicationDocument && !resolvePublication(url)) {
+    if (cancelRequested) {
+      stopReason = StopReason::CANCELLED;
+      if (goHomeAfterCancel) {
+        onGoHome();
+        return;
+      }
+      mappedInput.suppressNextBackRelease();
+      finishWith(Phase::DONE);
+      return;
+    }
+    ++failed;
+    requestUpdate();
+    return;
+  }
 
 #ifdef SIMULATOR
   (void)validateEpub;
@@ -845,7 +979,13 @@ void OpdsLibrarySyncActivity::downloadNext() {
   options.bufferSize = DOWNLOAD_BUFFER_SIZE;
   options.transport = HttpDownloader::Transport::WOLFSSL;
   options.authorizationOrigin = authorizationOrigin;
+  // Bulk transfer: keep one full-record TLS buffer for the whole book, as the
+  // browser's downloads do. On X3/X4 it borrows TlsRecordReserve's block.
+  options.reserveFullRecord = true;
   options.stageAsPart = true;
+  options.useServerFilename = server.useServerFilename;
+  std::string resolvedPath;
+  options.resolvedPath = &resolvedPath;
   options.checkFreeSpace = true;
   options.freeSpaceEstimate = &freeSpaceEstimate;
   options.validate = &validateEpub;
@@ -888,8 +1028,19 @@ void OpdsLibrarySyncActivity::downloadNext() {
   switch (result) {
     case HttpDownloader::OK:
       ++downloaded;
-      clearBookCache(path);
-      appendLedger(identity, path);
+      // A cache may survive from an earlier copy at this path; keep its
+      // reading position and stats, as the browser does.
+      if (!clearBookCachePreservingUserState(resolvedPath, true)) {
+        LOG_ERR(LOG_TAG, "Book saved but cache refresh failed: %s", resolvedPath.c_str());
+      }
+      appendLedger(identity, resolvedPath);
+      break;
+    case HttpDownloader::FILE_EXISTS:
+      // Use Server Filename: the server's name for this book is already on
+      // the card. Never replaced; remembered so the next sync skips it early.
+      LOG_INF(LOG_TAG, "Already on the card as %s", resolvedPath.c_str());
+      ++alreadyPresent;
+      appendLedger(identity, resolvedPath);
       break;
     case HttpDownloader::ABORTED:
       stopReason = StopReason::CANCELLED;
@@ -950,7 +1101,7 @@ void OpdsLibrarySyncActivity::rootScreen(UiApp::ScreenType& screen, void* user) 
 }
 
 void OpdsLibrarySyncActivity::buildHeader(UiApp::ScreenType& screen) {
-  screen.takeBottom(static_cast<int16_t>(UITheme::getInstance().getMetrics().buttonHintsHeight));
+  screen.takeBottom(static_cast<int16_t>(UITheme::getButtonHintsReserve(renderer)));
   fui::HeaderProps header;
   header.title = tr(STR_OPDS_LIBRARY_SYNC);
   header.borderEdges = fui::EdgeBottom;
@@ -1007,7 +1158,7 @@ void OpdsLibrarySyncActivity::buildBody(UiApp::ScreenType& screen) {
   const fui::Rect body = screen.body();
   if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
 
-  const char* folder = SETTINGS.opdsDownloadFolder[0] != '\0' ? SETTINGS.opdsDownloadFolder : "/";
+  const char* folder = downloadFolder.empty() ? "/" : downloadFolder.c_str();
   switch (phase) {
     case Phase::SCANNING:
       addLine(screen, tr(STR_OPDS_SYNC_SCANNING_DEVICE), true);
@@ -1016,24 +1167,24 @@ void OpdsLibrarySyncActivity::buildBody(UiApp::ScreenType& screen) {
     case Phase::FETCHING:
       addLine(screen, tr(STR_OPDS_SYNC_CHECKING_CATALOGUE), true);
       addLine(screen, feedTitle.c_str());
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_CATALOGUE_PROGRESS), static_cast<unsigned>(pagesFetched),
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_CATALOGUE_PROGRESS_FORMAT), static_cast<unsigned>(pagesFetched),
                static_cast<unsigned>(catalogueBooks), static_cast<unsigned>(missingBooks));
       addLine(screen, line);
       break;
     case Phase::CONFIRM:
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_MISSING_SUMMARY), static_cast<unsigned>(missingBooks),
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_MISSING_SUMMARY_FORMAT), static_cast<unsigned>(missingBooks),
                static_cast<unsigned>(catalogueBooks));
       addLine(screen, line, true);
       addLine(screen, feedTitle.c_str());
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOAD_TO), folder);
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOAD_TO_FORMAT), folder);
       addLine(screen, line);
       if (unsupportedEntries > 0) {
-        snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_UNSUPPORTED), static_cast<unsigned>(unsupportedEntries));
+        snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_UNSUPPORTED_FORMAT), static_cast<unsigned>(unsupportedEntries));
         addLine(screen, line);
       }
       break;
     case Phase::DOWNLOADING: {
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOADING_PROGRESS), static_cast<unsigned>(queueIndex),
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOADING_PROGRESS_FORMAT), static_cast<unsigned>(queueIndex),
                static_cast<unsigned>(missingBooks));
       addLine(screen, line, true);
       addLine(screen, currentTitle.c_str());
@@ -1046,7 +1197,7 @@ void OpdsLibrarySyncActivity::buildBody(UiApp::ScreenType& screen) {
         progress.borderWidth = 1;
         fui::progressBar(screen.frame(), bar, progress);
       }
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOAD_COUNTS), static_cast<unsigned>(downloaded),
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_DOWNLOAD_COUNTS_FORMAT), static_cast<unsigned>(downloaded),
                static_cast<unsigned>(failed));
       addLine(screen, line);
       break;
@@ -1062,14 +1213,14 @@ void OpdsLibrarySyncActivity::buildBody(UiApp::ScreenType& screen) {
         addLine(screen, tr(STR_OPDS_SYNC_COMPLETE), true);
       }
       addLine(screen, feedTitle.c_str());
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_DOWNLOADED), static_cast<unsigned>(downloaded));
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_DOWNLOADED_FORMAT), static_cast<unsigned>(downloaded));
       addLine(screen, line);
       // Books matched during the catalogue walk, plus queued ones that turned
       // out to exist by the time their turn came.
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_PRESENT),
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_PRESENT_FORMAT),
                static_cast<unsigned>(catalogueBooks - missingBooks + alreadyPresent));
       addLine(screen, line);
-      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_FAILED), static_cast<unsigned>(failed));
+      snprintf(line, sizeof(line), tr(STR_OPDS_SYNC_RESULT_FAILED_FORMAT), static_cast<unsigned>(failed));
       addLine(screen, line);
       break;
     case Phase::ERROR:
@@ -1126,7 +1277,7 @@ void OpdsLibrarySyncActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   uiReady = false;
-  app.render();
+  renderUiApp(app, uiTarget);
   uiReady = true;
   renderer.displayBuffer(screenTransitionRefresh.modeFor(static_cast<uint8_t>(phase)));
 }

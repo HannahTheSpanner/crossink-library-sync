@@ -4,9 +4,9 @@
 // session hold most of the heap, and the largest free block can be only a few
 // KB. A device log showed library sync failing after 2366 bytes of a page
 // with OpdsParserError::BUFFER_MEMORY: expat had to grow its input buffer
-// from 2 KB to 4 KB. These tests pin the parser to expat's initial 2 KB
-// buffer for realistic pages delivered the way SecureHttpClient delivers them
-// (up to 2 KB per callback).
+// from 2 KB to 4 KB. These tests pin the parser to a 2 KB expat buffer, with
+// the device's expat flags (XML_CONTEXT_BYTES=0), for realistic pages
+// delivered the way SecureHttpClient delivers them (up to 2 KB per callback).
 
 #include <gtest/gtest.h>
 #include <malloc.h>
@@ -17,6 +17,7 @@
 #include <string>
 
 #include "OpdsParser.h"
+#include "XmlParserUtils.h"  // the test allocator expat runs on (test/opds_parser/stubs)
 
 extern "C" void* __libc_malloc(size_t);
 extern "C" void __libc_free(void*);
@@ -126,9 +127,10 @@ size_t largestRequestWhileParsing(const std::string& xml, const size_t delivery,
   return largestRequest;
 }
 
-// expat's input buffer starts at 2 KB; nothing else the parser allocates is
-// that large.
-constexpr size_t EXPAT_INITIAL_BUFFER = 2048;
+// expat's input buffer settles at 2 KB for 512-byte slices; nothing else the
+// parser allocates is that large. The host test allocator puts a small header
+// in front of every expat block, which the device does not have.
+constexpr size_t EXPAT_INITIAL_BUFFER = 2048 + sizeof(XmlTestHeap::Allocation);
 
 TEST(OpdsParserMemory, StreamingPageNeverGrowsExpatBuffer) {
   const std::string xml = grimmoryPage(50);

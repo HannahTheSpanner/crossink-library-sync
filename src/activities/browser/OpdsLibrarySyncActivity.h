@@ -31,6 +31,12 @@ class LibraryIndexFile;
  * name, EPUB metadata, or an earlier sync of the same server entry) are left
  * alone.
  *
+ * Downloads follow the server's OPDS settings exactly as the browser does:
+ * its download folder and, when Use Server Filename is on, the server's file
+ * name. Atom (OPDS 1) and JSON (OPDS 2) catalogues are both supported; an
+ * OPDS 2 publication without a direct EPUB link is resolved through its
+ * publication document when its turn to download comes.
+ *
  * Memory stays flat regardless of catalogue size. Feed pages are parsed in
  * streaming mode, the missing-book queue lives on the SD card, and the only
  * structure that scales with the library is a sorted array of 8-byte keys for
@@ -59,8 +65,10 @@ class OpdsLibrarySyncActivity final : public Activity {
   // ends must not keep the radio up forever.
   static constexpr size_t MAX_PAGES = 200;
   static constexpr int PAGE_ATTEMPTS = 3;
-  // One queue record: identity, URL (parser caps at 768), title (160) and
-  // author (120) plus separators, with headroom.
+  // OPDS 2 indirect acquisitions, as the browser follows them.
+  static constexpr int MAX_PUBLICATION_HOPS = 4;
+  // One queue record: identity, link kind, URL (parsers cap at 768), title
+  // (160) and author (120) plus separators, with headroom.
   static constexpr size_t RECORD_BUFFER_SIZE = 1280;
   static constexpr int MAX_SCAN_DEPTH = 6;
   static constexpr size_t SCAN_PATH_SIZE = 256;
@@ -70,6 +78,8 @@ class OpdsLibrarySyncActivity final : public Activity {
   std::string feedTitle;
   std::string authorizationOrigin;
   std::string ledgerPath;
+  // The server's effective download folder, normalised ("" or "/" is the SD root).
+  std::string downloadFolder;
 
   freeink::ui::GfxRendererTarget uiTarget;  // must precede `app`: the app holds a reference to it
   UiApp app;
@@ -143,7 +153,9 @@ class OpdsLibrarySyncActivity final : public Activity {
   bool appendPageToQueue();
   void finishCatalogue();
   void downloadNext();
-  bool readQueueRecord(std::string& identity, std::string& url, std::string& title, std::string& author);
+  bool readQueueRecord(std::string& identity, bool& publicationDocument, std::string& url, std::string& title,
+                       std::string& author);
+  bool resolvePublication(std::string& url);
   void appendLedger(const std::string& identity, const std::string& path);
   bool isPresent(const OpdsEntry& entry, const std::string& absoluteHref);
   bool metadataPresent(uint64_t key);

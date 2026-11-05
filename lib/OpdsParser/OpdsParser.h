@@ -2,11 +2,13 @@
 #include <Print.h>
 #include <expat.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
 constexpr size_t MAX_OPDS_FEED_ENTRIES = 50;
+constexpr size_t MAX_OPDS_DESCRIPTION_BYTES = 256;
 
 /**
  * Type of OPDS entry.
@@ -29,7 +31,7 @@ enum class OpdsParserError {
 struct OpdsEntry;
 
 /**
- * Receives each completed entry when the parser runs in streaming mode.
+ * Receives each completed entry when a parser runs in streaming mode.
  * The entry is owned by the parser and is reset after the call, so the sink
  * may move strings out of it. Return false to stop parsing (the parser then
  * reports SINK_ABORTED).
@@ -48,6 +50,12 @@ struct OpdsEntry {
   // Item count advertised for a navigation entry (thr:count on its link, or a
   // "<N> books" summary); -1 when the feed does not say.
   int32_t count = -1;
+  // A bounded preview, stored in the caller's fallibly allocated entry array.
+  // 257 bytes per entry, no per-description heap allocations (13 KB / feed).
+  std::array<char, MAX_OPDS_DESCRIPTION_BYTES + 1> description{};
+  std::string selfHref;  // OPDS 2 publication metadata document
+  bool indirect = false;
+  bool unsupportedAcquisition = false;  // Purchase or LCP service required
 };
 
 // Legacy alias for backward compatibility
@@ -228,6 +236,11 @@ class OpdsParser final : public Print {
   bool inAuthorName = false;
   bool inId = false;
   bool inSummary = false;
+  bool summaryIsContent = false;
+  bool descriptionMarkup = false;
+  bool descriptionIsHtml = false;
+  bool collectDescription = false;
+  unsigned descriptionDepth = 0;
 
   bool errorOccured = false;
   OpdsParserError errorReason = OpdsParserError::NONE;

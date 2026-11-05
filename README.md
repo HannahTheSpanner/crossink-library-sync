@@ -2,7 +2,7 @@
 
 This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my preferred of the popular forks of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), the open firmware for Xteink e-readers.
 
-It is CrossInk v1.6.1 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
+It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4, and one extra reader font, EB Garamond. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, the other fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
 > **A note on credit.** I take no credit for the work in this fork. Claude, Anthropic’s AI model, wrote the code, chased down the bugs and wrote these docs. My role was project management in the loosest possible sense: describing what I wanted, plugging in a USB cable, pasting serial logs, and announcing “it still doesn’t work” with the confidence of someone who could not have fixed it herself.
 >
@@ -12,7 +12,7 @@ It is CrossInk v1.6.1 with one feature added, bulk syncing of an OPDS library, p
 
 ### 1. Sync missing books from an OPDS catalogue
 
-CrossInk's OPDS browser downloads one book at a time. This fork adds a **Sync missing books** row that compares a whole catalogue with the books on the SD card and downloads everything that is missing, in one go.
+CrossInk's OPDS browser (in **File Transfer**) downloads one book at a time. This fork adds a **Sync missing books** row that compares a whole catalogue with the books on the SD card and downloads everything that is missing, in one go. It works with OPDS 1 (Atom) and OPDS 2 (JSON) catalogues.
 
 This would not be possible without the fantastic [Library Sync plugin for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson. The feature is a port of its "Sync missing books" flow; see [Credit: Library Sync for KOReader](#credit-library-sync-for-koreader) for how it was ported.
 
@@ -20,6 +20,7 @@ This would not be possible without the fantastic [Library Sync plugin for KORead
 
 - At a server's top level, when the server has an "All Books" (or "Catalog") entry. Grimmory and BookOrbit both have one.
 - At the top of any catalogue that lists books, such as a shelf, series or search result. It syncs the whole catalogue from its first page, even if you are viewing a later page.
+- An OPDS 2 page whose books are only previews of its groups offers its "All Books" catalogue instead, if it has one.
 
 **How a sync runs**
 
@@ -27,16 +28,16 @@ This would not be possible without the fantastic [Library Sync plugin for KORead
    - A local file has a name a downloader would give it: `Author - Title`, `Title - Author`, `Last, First - Title`, `Title, The - Author`, the bare title, or the server's own file name. Names are compared without regard to case, accents or punctuation.
    - CrossInk's Library index has an EPUB with the same title and author.
    - An earlier sync downloaded it from the same server, even if it has since been renamed on the server.
-2. **Check the catalogue.** Every page is fetched by following its "next" links, up to 200 pages, with loop detection. If any page still can't be read after three attempts, the sync stops before downloading anything, so a partial catalogue is never treated as complete. Entries without an EPUB link (PDF-only books, for example) are counted and skipped.
-3. **Confirm, then download.** You see how many books are missing before anything downloads. Books are saved one at a time to the OPDS download folder, using the server's naming format. One failed book doesn't stop the rest, and you can cancel at any point.
+2. **Check the catalogue.** Every page is fetched by following its "next" links, up to 200 pages, with loop detection. If any page still can't be read after three attempts, the sync stops before downloading anything, so a partial catalogue is never treated as complete. Entries without an EPUB link (PDF-only books, or OPDS 2 books that must be bought or need LCP) are counted and skipped.
+3. **Confirm, then download.** You see how many books are missing before anything downloads. Books are saved one at a time exactly as the OPDS browser would save them: to the server's Download Folder, with its Filename format, or under the server's own file name when **Use Server Filename** is on. OPDS 2 books that link to a publication page rather than the EPUB are resolved first. One failed book doesn't stop the rest, and you can cancel at any point.
 
-Nothing is ever replaced or deleted.
+Nothing is ever replaced or deleted. With Use Server Filename on, a book whose server file name is already on the card counts as present.
 
 **How it fits in the memory**
 
 The X3 and X4 have about 380 KB of RAM and no PSRAM, so the sync is designed so its memory use stays flat however large the library is:
 
-- Catalogue pages are parsed as a stream, one entry at a time, instead of being loaded whole.
+- Catalogue pages are parsed as a stream, one entry at a time, instead of being loaded whole. Both the Atom and the JSON parser have a streaming mode for this.
 - The queue of missing books is written to the SD card (`/.crosspoint/opds_sync_queue.tsv`), not held in memory.
 - Books on the card are held as a sorted array of 8-byte hashes of their normalised names, so checking a catalogue book is a binary search.
 - Each server has a small ledger on the card (`/.crosspoint/opds_sync_<hash>.txt`) recording the OPDS identity of every book it synced. That is how renamed books are still recognised.
@@ -58,8 +59,10 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
   - wolfSSL's allocator is routed through hooks, so its receive buffer borrows that block instead of asking the heap for one.
   - If the server accepts small records, the block is handed straight back.
   - Boards with PSRAM skip all of this.
+  - CrossInk v2.0.0 added its own fix for downloads: once a book's request is sent, the connection allocates one full-record receive buffer and keeps it for the whole transfer. On the X3 and X4 that allocation now takes the block set aside at the start, which is still free when the heap no longer has one that large. Catalogue pages, which v2.0.0 does not cover, use the block the same way.
 - **Patch wolfSSL at build time.** `scripts/patch_wolfssl.py` modifies wolfSSL's input-buffer code during the build, so the receive buffer can use the reserved block.
   - It also reports whether the server accepted small records.
+  - It composes with v2.0.0's own wolfSSL patches, including on a dependency cache patched by an older build of this fork.
   - The firmware build fails if the patch didn't apply, so a build can't ship without the fix.
 - **Tests.** Host tests cover the reserve (`test/tls_record_reserve`).
 
@@ -72,10 +75,10 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
 - **The book list behind the sync screen.** The browser kept its loaded page (up to 50 books, about 6 to 13 KB) in memory for the whole sync. From a 50-book list that left the reader with as little as 3.7 KB free. At that level WiFi can't even receive data, so the TLS handshake stalled.
 
 **Fix.**
-- **Smaller parser slices.** The parser now feeds expat 512 bytes at a time, so expat's buffer never needs to grow. A host test (`test/opds_parser_memory`) checks this:
+- **No parser buffer growth.** Feeding expat 512 bytes at a time kept its buffer at 2 KB. CrossInk v2.0.0 turned off expat's input context (`XML_CONTEXT_BYTES=0`), which keeps CrossInk's own 1 KB slices within 2 KB too, so this fork now uses them. A host test (`test/opds_parser_memory`) checks this:
   - It builds the firmware's own copy of expat with the device's settings.
   - It records every allocation made while parsing a realistic 50-book Grimmory page.
-  - It fails if any single request exceeds 2 KB.
+  - It fails if any single request exceeds 2 KB (and does fail with the old expat setting).
 - **Free the browser's page during a sync.** Starting a sync frees the browser's page, and the page reloads when the sync screen closes.
 - **No unused space in the book list.** The sync's list of books on the card starts small and gives back unused space once it's built. This matters more as a library and its sync history grow.
 - **Retry and report memory failures.** A page that runs out of memory is retried. If it still fails, the error says "Memory error" instead of "Failed to fetch feed".
@@ -83,9 +86,18 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
 
 ### 4. OPDS reliability
 
-- Brief connection failures are retried automatically: catalogue pages up to three times, downloads twice, with a short back-off. Errors that won't change on retry, such as a rejected login or a missing page, are not retried.
-- OPDS errors show the server's HTTP status, for example "Failed to fetch feed (HTTP 401)" for a rejected username or password.
+- Brief connection failures and server errors (408, 429, 5xx) are retried automatically: catalogue pages up to three times, downloads twice, with a short back-off. CrossInk v2.0.0 already resumes a download that is cut short; these retries cover server errors and fresh starts. Errors that won't change on retry, such as a rejected login or a missing page, are not retried.
+- Catalogue errors use CrossInk v2.0.0's messages (login rejected, server error, unreachable). Download errors add the server's HTTP status, for example "Download failed (HTTP 404)".
 - **Retry** after a failed download retries that book instead of reloading the catalogue page, and **Back** returns to the book list.
+
+### 5. EB Garamond reader font
+
+[EB Garamond](https://github.com/octaviopardo/EBGaramond12) by Georg Duffner and Octavio Pardo, a classic old-style serif, is added as a reader font. It is released under the SIL Open Font License 1.1, which is included next to the font files.
+
+- **X4 Classic, X4 Pro, Sticky and Picco:** built in, next to Lexend Deca and Bitter, as a scalable font from 8 to 22 pt. Choose it in **Settings > Reader > Font Options > Font Family** or the reader's font menu.
+- **X3 and X4:** not built in. These readers have no scalable fonts, and EB Garamond's pre-rendered sizes do not fit in their firmware partition next to CrossInk v2.0.0. Each release instead includes `EB-Garamond-SD-font.zip`: unzip it and copy the `EB Garamond` folder to `/.fonts/` on the SD card. It then appears in the font list like any SD font, in sizes from 8 to 20 pt.
+
+Regular and italic text use EB Garamond's Medium weight, which holds up better on e-ink than the thinner Regular (Bitter's built-in copy does the same). Both copies cover Latin, Greek and Cyrillic.
 
 ## Credit: Library Sync for KOReader
 
@@ -119,28 +131,34 @@ KOReader devices have hundreds of megabytes of RAM, so the plugin can hold a who
 | Xteink X3 and X4 | `firmware-x3-x4.bin` |
 | Xteink X4 Classic | `firmware-x4-classic.bin` |
 | Xteink X4 Pro | `firmware-x4-pro.bin` |
+| Seeed reTerminal Sticky | `firmware-sticky.bin` |
+| BOOX Picco | `firmware-picco.bin` |
 
-Download from [Releases](https://github.com/HannahTheSpanner/crossink-library-sync/releases). To install, copy the file to the SD card, then on the device open **Settings > System > SD Card Firmware Update** and select it. USB flashing is covered in [docs/installation.md](./docs/installation.md).
+Download from [Releases](https://github.com/HannahTheSpanner/crossink-library-sync/releases). To install on an Xteink or the Sticky, copy the file to the SD card, then on the device open **Settings > System > SD Card Firmware Update** and select it. USB flashing is covered in [docs/installation.md](./docs/installation.md).
+
+The BOOX Picco is different: `firmware-picco.bin` is an image for its `app` slot only, and it must be installed with a USB installer that explicitly supports the Picco, without erasing the device, so its recovery software stays intact. SD-card and Wi-Fi updates are not available on the Picco. See [docs/picco.md](./docs/picco.md).
 
 Installing an official CrossInk update over the air replaces this fork with upstream CrossInk.
 
 ## Building
 
-GitHub Actions builds all three firmware files on every push, and runs the OPDS and TLS host tests. To build locally, use PlatformIO as described in CrossInk's [Getting Started](./docs/development/getting-started.md) guide:
+GitHub Actions builds all five firmware files on every push, and runs the OPDS, TLS and download host tests. To build locally, use PlatformIO as described in CrossInk's [Getting Started](./docs/development/getting-started.md) guide:
 
 ```sh
 git submodule update --init --recursive
 pio run -e default      # X3 and X4
 pio run -e x4-classic   # X4 Classic
 pio run -e x4-pro       # X4 Pro
+pio run -e sticky       # reTerminal Sticky
+pio run -e picco        # BOOX Picco
 ```
 
 Host tests for this fork's changes:
 
 ```sh
 cmake -S test -B build-tests
-cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibraryMatchTest TlsRecordReserveTest
-ctest --test-dir build-tests -R "Opds|TlsRecordReserve"
+cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibraryMatchTest TlsRecordReserveTest HttpDownloaderTest HttpDownloaderDevicePathTest
+ctest --test-dir build-tests -R "Opds|TlsRecordReserve|HttpDownloader"
 ```
 
 ## Credits and support

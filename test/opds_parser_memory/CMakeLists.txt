@@ -10,7 +10,7 @@ add_library(opds_device_expat STATIC
   ${REPO_ROOT}/lib/expat/xmltok.c
 )
 target_include_directories(opds_device_expat PUBLIC ${REPO_ROOT}/lib/expat)
-target_compile_definitions(opds_device_expat PUBLIC XML_GE=0 XML_CONTEXT_BYTES=1024)
+target_compile_definitions(opds_device_expat PUBLIC XML_GE=0 XML_CONTEXT_BYTES=0)
 target_compile_options(opds_device_expat PRIVATE -w)
 
 add_executable(OpdsParserMemoryTest

@@ -1,10 +1,14 @@
 name: Build firmware
 
-# Builds every Xteink image this fork targets on each push, so the latest
-# commit always has flashable binaries attached as workflow artifacts.
+# Builds an image for every device CrossInk supports on each push, so the
+# latest commit always has flashable binaries attached as workflow artifacts.
 #   default    -> Xteink X3 and X4 (one ESP32-C3 image covers both)
 #   x4-classic -> Xteink X4 Classic (X4C)
 #   x4-pro     -> Xteink X4 Pro (X4P)
+#   sticky     -> Seeed reTerminal Sticky
+#   picco      -> BOOX Picco (app-slot image; see docs/picco.md)
+# plus the EB Garamond SD font pack for the X3/X4, whose firmware has no room
+# for it as a built-in font.
 
 on:
   push:
@@ -27,7 +31,7 @@ permissions:
 
 jobs:
   host-tests:
-    name: Host tests (OPDS, TLS)
+    name: Host tests (OPDS, TLS, downloads)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -47,10 +51,14 @@ jobs:
           if [ -d test/opds_library_match ]; then targets="$targets OpdsLibraryMatchTest"; fi
           if [ -d test/tls_record_reserve ]; then targets="$targets TlsRecordReserveTest"; fi
           if [ -d test/opds_parser_memory ]; then targets="$targets OpdsParserMemoryTest"; fi
+          if [ -d test/http_downloader ]; then targets="$targets HttpDownloaderTest HttpDownloaderDevicePathTest"; fi
           cmake --build build-tests -j4 --target $targets
 
-      - name: Run OPDS and TLS tests
-        run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve"
+      # "Opds" also selects the OPDS feed recovery harness, which compiles the
+      # browser's real fetchFeed()/addSyncRow() against stubs. Upstream's
+      # OpdsServerStoreTest does not link at v2.0.0-rc, so it is not built.
+      - name: Run OPDS, TLS and download tests
+        run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve|HttpDownloader" -E "OpdsServerStore"
 
   firmware:
     name: Firmware (${{ matrix.device }})
@@ -68,6 +76,12 @@ jobs:
           - environment: x4-pro
             firmware: firmware-x4-pro
             device: X4 Pro
+          - environment: sticky
+            firmware: firmware-sticky
+            device: reTerminal Sticky
+          - environment: picco
+            firmware: firmware-picco
+            device: BOOX Picco
     steps:
       - uses: actions/checkout@v6
         with:
@@ -94,6 +108,17 @@ jobs:
       - name: Install PlatformIO Core
         run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
 
+      # Same as upstream's release workflow: custom_sdkconfig runs a nested
+      # `pio run` from ~/.platformio/penv, which must use the same core.
+      # See https://github.com/pioarduino/platform-espressif32/issues/529
+      - name: Pin pioarduino core inside the platform penv
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio pkg install -e "${{ matrix.environment }}"
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+          ~/.platformio/penv/bin/pio --version
+
       - name: Build ${{ matrix.environment }}
         shell: bash
         run: |
@@ -115,15 +140,52 @@ jobs:
           path: .pio/build/${{ matrix.environment }}/${{ matrix.firmware }}.bin
           if-no-files-found: error
 
+  sd-font:
+    name: SD font (EB Garamond for X3/X4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      # Same toolchain as upstream's release-fonts workflow.
+      - name: Install font tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfreetype6-dev
+          pip install freetype-py fonttools pyyaml
+
+      - name: Build .cpfont pack
+        run: |
+          python3 lib/EpdFont/scripts/build-sd-fonts.py --config lib/EpdFont/scripts/sd-fonts-fork.yaml \
+            --output-dir dist/sd-fonts --clean --verbose -j 1
+          mkdir -p dist/release
+          cp "dist/sd-fonts/EB Garamond.zip" dist/release/EB-Garamond-SD-font.zip
+          unzip -l dist/release/EB-Garamond-SD-font.zip
+
+      - name: Upload SD font
+        uses: actions/upload-artifact@v7
+        with:
+          name: sd-font-eb-garamond
+          path: dist/release/EB-Garamond-SD-font.zip
+          if-no-files-found: error
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [host-tests, firmware]
+    needs: [host-tests, firmware, sd-font]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
         with:
           pattern: firmware-*
+          merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: sd-font-*
           merge-multiple: true
           path: dist
 
@@ -134,5 +196,7 @@ jobs:
       # publishing there also fires a tag push.
       - uses: softprops/action-gh-release@v3
         with:
-          files: dist/*.bin
+          files: |
+            dist/*.bin
+            dist/*.zip
           generate_release_notes: ${{ github.event_name != 'release' }}
