@@ -23,6 +23,8 @@
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "network/HttpDownloader.h"
+#include "network/RetryBackoff.h"
+#include "network/TlsRecordReserve.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsDownloadFolder.h"
 #include "util/OpdsFeedError.h"
@@ -685,12 +687,20 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
 
   std::string pageNext;
   size_t pageSeen = 0;
+  size_t pageNavigation = 0;
   bool pageOk = false;
   auto result = HttpDownloader::OK;
   OpdsParserError parseError = OpdsParserError::NONE;
   HttpRequestDiagnostics diagnostics;
+  bool cancelledInBackoff = false;
   for (int attempt = 1; attempt <= PAGE_ATTEMPTS && !pageOk; ++attempt) {
-    if (attempt > 1) delay(RETRY_BACKOFF_MS * (attempt - 1));
+    if (attempt > 1 && retryBackoff(RETRY_BACKOFF_MS * (attempt - 1), [this] { return pollCancel(); })) {
+      cancelledInBackoff = true;
+      break;
+    }
+    // Best effort on X3/X4: the block may have been returned by an earlier
+    // connection whose server accepted small records.
+    TlsRecordReserve::acquire();
     // Each page opens a fresh HTTPS connection; on X3/X4 the largest free
     // block decides whether it and the parser fit.
     LOG_INF(LOG_TAG, "Page %u attempt %d: heap free=%u largest=%u", static_cast<unsigned>(pagesFetched + 1), attempt,
@@ -745,6 +755,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       pageOk = true;
       pageNext = parser.getNextPageUrl();
       pageSeen = parser.getEntriesSeen();
+      pageNavigation = parser.getNavigationEntriesSeen();
       if (parser.hasGroupedPublications()) {
         LOG_INF(LOG_TAG, "Page %u: grouped previews skipped", static_cast<unsigned>(pagesFetched + 1));
       }
@@ -767,6 +778,16 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     }
   }
 
+  if (cancelledInBackoff) {
+    stopReason = StopReason::CANCELLED;
+    if (goHomeAfterCancel) {
+      onGoHome();
+      return;
+    }
+    mappedInput.suppressNextBackRelease();
+    finishWith(Phase::DONE);
+    return;
+  }
   if (!pageOk) {
     // library-sync stops before downloading anything when the catalogue
     // cannot be read completely; partial results would look like a full sync.
@@ -783,7 +804,10 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   visitedPages[pagesFetched++] = pageKey;
   catalogueBooks += pageBooks;
   missingBooks += pageMissing;
-  unsupportedEntries += pageSeen > pageBooks ? pageSeen - pageBooks : 0;
+  // Entries that were neither a book with an EPUB nor a link to another
+  // feed: PDF-only books, and OPDS 2 purchase or LCP publications.
+  const size_t pageUsable = pageBooks + pageNavigation;
+  unsupportedEntries += pageSeen > pageUsable ? pageSeen - pageUsable : 0;
   nextPageUrl = pageNext.empty() ? std::string() : UrlUtils::resolveReference(pageUrl, pageNext);
 
   if (nextPageUrl.empty()) {
@@ -931,6 +955,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
     // a catalogue that lists the same book twice) is left as it is.
     if (Storage.exists(path.c_str())) {
       ++alreadyPresent;
+      requestUpdate();
       return;
     }
   }
@@ -998,6 +1023,8 @@ void OpdsLibrarySyncActivity::downloadNext() {
   HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
   for (int attempt = 1;; ++attempt) {
     lastRenderedPercent = -1;
+    // See fetchNextPage(): a book may come from a host other than the catalogue's.
+    TlsRecordReserve::acquire();
     result = HttpDownloader::downloadToFile(
         url, path,
         [this, &lastRenderedPercent, &lastUpdateMs](const size_t done, const size_t total) {
@@ -1018,8 +1045,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
     }
     LOG_ERR(LOG_TAG, "Download attempt %d/%d failed (status %d); retrying: %s", attempt, DOWNLOAD_ATTEMPTS,
             responseStatus, title.c_str());
-    delay(RETRY_BACKOFF_MS);
-    if (pollCancel()) {
+    if (retryBackoff(RETRY_BACKOFF_MS, [this] { return pollCancel(); })) {
       result = HttpDownloader::ABORTED;
       break;
     }

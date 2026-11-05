@@ -41,6 +41,11 @@ prefix = r'''
 inline void delay(unsigned long) {}
 constexpr int FEED_ATTEMPTS = 3;
 constexpr unsigned long RETRY_BACKOFF_MS = 1000;
+// The real retryBackoff() polls the cancel check during a timed pause; the
+// harness has no clock, so it checks once and does not wait.
+template <typename Cancelled>
+bool retryBackoff(unsigned long, Cancelled&& cancelled) { return cancelled(); }
+struct MappedInputManager { enum class Button { Back }; };
 struct RenderLock {};
 struct I18n { static I18n& getInstance() { static I18n value; return value; } const char* getCode() const { return "en"; } };
 void replaceFolderEmoji(std::string&) {}
@@ -112,6 +117,9 @@ struct OpdsBookBrowserActivity {
     std::string withPreviousPageArrow(const char* text) { return text; }
     std::string withNextPageArrow(const char* text) { return text; }
     std::string resolveLabel(const std::string& text) { return text; }
+    void update() {}
+    bool wasPressed(MappedInputManager::Button) const { return false; }
+    bool wasReleased(MappedInputManager::Button) const { return false; }
   } mappedInput;
   void requestUpdate() {}
   bool ensureEntryBuffer();

@@ -38,6 +38,7 @@
 #include "components/icons/listIcons.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "network/RetryBackoff.h"
 #include "network/TlsRecordReserve.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsDownloadFolder.h"
@@ -768,7 +769,16 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
     // Free what the partial attempt parsed before the next one allocates again.
     attemptParser.reset();
     clearEntries();
-    delay(RETRY_BACKOFF_MS * attempt);
+    // Back during the pause gives up on the page; the failure shows as usual
+    // and the next Back leaves it.
+    if (retryBackoff(RETRY_BACKOFF_MS * attempt, [this] {
+          mappedInput.update();
+          return mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+                 mappedInput.wasReleased(MappedInputManager::Button::Back);
+        })) {
+      attemptParser.emplace(entries.get(), MAX_OPDS_FEED_ENTRIES);
+      break;
+    }
   }
   OpdsFeedParser& parser = *attemptParser;
   parser.flush();  // Finalize before publishing or discarding the bounded entry array.
@@ -1221,6 +1231,10 @@ void OpdsBookBrowserActivity::downloadBook(DownloadRequest request, const std::s
   HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
   for (int attempt = 1;; ++attempt) {
     lastRenderedPercent = -1;
+    // Best effort on X3/X4: an earlier connection to a server that accepted
+    // small records returned the block, and the book may come from another
+    // host. The catalogue is freed during downloads, so the heap has room.
+    TlsRecordReserve::acquire();
     result = HttpDownloader::downloadToFile(
         request.url, request.filename,
         [this, &lastRenderedPercent, &lastProgressUpdateMs](const size_t downloaded, const size_t total) {
@@ -1242,9 +1256,8 @@ void OpdsBookBrowserActivity::downloadBook(DownloadRequest request, const std::s
     LOG_ERR("OPDS", "Download attempt %d/%d failed (status %d); retrying", attempt, DOWNLOAD_ATTEMPTS, downloadStatus);
     downloadProgress = downloadTotal = 0;
     requestUpdate(true);
-    delay(RETRY_BACKOFF_MS);
     // A Back press or Cancel during the pause still stops the transfer.
-    if (pollCancel()) {
+    if (retryBackoff(RETRY_BACKOFF_MS, pollCancel)) {
       result = HttpDownloader::ABORTED;
       break;
     }

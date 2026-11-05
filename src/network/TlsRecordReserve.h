@@ -28,6 +28,10 @@ constexpr size_t RESERVE_BYTES = 16384 + 256 + 5 + 64;
 // Reserve the block. Returns true once reserved, or on PSRAM boards, where
 // large allocations are served from PSRAM and no reserve is needed.
 // Idempotent; returns false only if the block could not be allocated.
+// Call it again before each bulk transfer: a server that accepted small
+// records returns the block (see FreeInkTlsRecordReserveSmallRecords), and the
+// next transfer may go to a host that does not (a redirect to a file server),
+// so this is a cheap best-effort re-reserve whenever the heap still allows it.
 bool acquire();
 
 // Return the block to the heap now, or as soon as the connection borrowing it
