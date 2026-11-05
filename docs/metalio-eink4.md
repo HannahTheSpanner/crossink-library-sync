@@ -23,7 +23,7 @@ read the serial log if something does not come up.
 
 - Volume up and down turn pages; BOOT is Confirm; the power button sleeps and
   wakes. The volume buttons sit behind an I2C expander, so the firmware polls
-  them about every 20 ms rather than waking on a GPIO edge.
+  them (every 20 ms while you are pressing buttons, every 100 ms after a few quiet seconds) rather than waking on a GPIO edge.
 - Touch follows the Picco: swipe up from the bottom edge to open the menu
   (which carries Home), and while reading swipe up anywhere for the Reader
   Menu. There is no Home key.

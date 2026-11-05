@@ -28,9 +28,14 @@ constexpr uint32_t ADC_POLL_MS = 10;
 // read. Give the task the headroom the I2C driver needs; the board has PSRAM
 // and this static stack costs 2 KB of internal RAM once.
 constexpr uint32_t CAPTURE_STACK_BYTES = 4096;
-// No GPIO edge announces an expander button, so poll it at close to the
-// expander helper's own 20 ms sample cadence instead of the 250 ms fallback.
-constexpr uint32_t POLLED_BUTTON_IDLE_MS = 20;
+// No GPIO edge announces an expander button, so the task polls it. While a
+// button was pressed recently it polls at the expander helper's own 20 ms
+// sample cadence (page turns in a row stay crisp); after a few quiet seconds
+// it backs off to 100 ms, which keeps the shared I2C bus mostly idle at the
+// cost of up to 100 ms on the first press after a pause.
+constexpr uint32_t POLLED_BUTTON_ACTIVE_MS = 20;
+constexpr uint32_t POLLED_BUTTON_QUIET_MS = 100;
+constexpr uint32_t POLLED_BUTTON_ACTIVE_WINDOW_MS = 5000;
 #else
 constexpr uint32_t CAPTURE_STACK_BYTES = 2048;
 #endif
@@ -154,7 +159,10 @@ void captureButtons(void*) {
     const bool sharedHeld = BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold &&
                             captureDecoder.isPowerButtonPhysicallyPressed();
 #if FREEINK_DEVICE_METALIO_EINK4
-    const uint32_t idleMs = POLLED_BUTTON_IDLE_MS;
+    static uint32_t lastButtonActivityMs = 0;
+    if (changed || pulses || raw != 0) lastButtonActivityMs = now;
+    const uint32_t idleMs =
+        now - lastButtonActivityMs < POLLED_BUTTON_ACTIVE_WINDOW_MS ? POLLED_BUTTON_ACTIVE_MS : POLLED_BUTTON_QUIET_MS;
 #else
     const uint32_t idleMs = 250;
 #endif
