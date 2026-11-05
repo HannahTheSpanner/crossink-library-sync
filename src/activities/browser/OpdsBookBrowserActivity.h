@@ -65,14 +65,29 @@ class OpdsBookBrowserActivity final : public Activity {
   BrowserState state = BrowserState::LOADING;
   ScreenTransitionRefresh screenTransitionRefresh;
   std::unique_ptr<OpdsEntry[]> entries;
-  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 2;
-  // 832 bytes owned by this activity; reused each render rather than allocated on the task stack.
+  // Parsed entries plus the synthetic sync, previous-page and next-page rows.
+  static constexpr size_t OPDS_BROWSER_ENTRY_CAPACITY = MAX_OPDS_FEED_ENTRIES + 3;
+  // 848 bytes owned by this activity; reused each render rather than allocated on the task stack.
   std::array<std::array<char, 16>, OPDS_BROWSER_ENTRY_CAPACITY> countLabels{};
   size_t entryCount = 0;
   bool hasPrevPageRow = false;
   bool hasNextPageRow = false;
-  std::vector<std::string> navigationHistory;
+  // Row 0 can be "Sync missing books": bulk-download what syncFeedUrl lists
+  // and the card lacks (OpdsLibrarySyncActivity).
+  bool hasSyncRow = false;
+  std::string syncFeedUrl;
+  std::string syncFeedTitle;
+  // A catalogue's first page and title. Pagination keeps them, so a sync
+  // started from page 3 still walks the whole catalogue.
+  struct HistoryEntry {
+    std::string path;
+    std::string feedRoot;
+    std::string feedTitle;
+  };
+  std::vector<HistoryEntry> navigationHistory;
   std::string currentPath;
+  std::string feedRootPath;
+  std::string feedTitle;
   std::string searchTemplate;
   int selectorIndex = 0;
   std::string errorMessage;
@@ -103,6 +118,17 @@ class OpdsBookBrowserActivity final : public Activity {
   bool catalogReleasedForDownload = false;
   int downloadSelectorIndex = 0;
   int downloadTopIndex = 0;
+  // Overwrite approval and final HTTP status of the download in progress,
+  // kept for the error screen and its Retry.
+  std::string downloadApprovedPath;
+  int downloadStatus = 0;
+  // Set while the error screen shows a failed download: Retry repeats that
+  // download and Back returns to the catalog. Null for feed errors.
+  std::unique_ptr<DownloadRequest> retryDownload;
+  std::string retryApprovedPath;
+  // Set when the library sync screen closes: launchLibrarySync() freed the
+  // page to give the sync more memory, and loop() fetches it again.
+  bool reloadAfterSync = false;
 
   // Single screen fn dispatching on `state`: every state shares the themed
   // header and gets built through FreeInkUI.
@@ -130,6 +156,8 @@ class OpdsBookBrowserActivity final : public Activity {
   bool appendEntry(OpdsEntry&& entry);
   void navigateToEntry(const OpdsEntry& entry, bool pageLink);
   void navigateBack();
+  void addSyncRow(const std::string& pageUrl, bool groupedFeed);
+  void launchLibrarySync();
   bool loadPublication(OpdsEntry& book, const std::string& url);
   void openPublication(OpdsEntry& book);
   void requestDownload(const OpdsEntry& book);

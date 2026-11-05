@@ -23,6 +23,9 @@ struct OpdsCatalogSmokeTest {
   using State = OpdsBookBrowserActivity::BrowserState;
   using Request = OpdsBookBrowserActivity::DownloadRequest;
   static constexpr const char* ORIGINAL_TITLE = "Original requested book";
+  // The /fiction fixture: row 0 is "Sync missing books", then three books.
+  static constexpr size_t FIXTURE_ROWS = 4;
+  static constexpr int TIME_MACHINE_ROW = 3;
 
   static void require(bool ok, const char* message) {
     if (ok) return;
@@ -37,12 +40,12 @@ struct OpdsCatalogSmokeTest {
   static void start(OpdsBookBrowserActivity& browser) {
     {
       RenderLock lock;
-      require(browser.entries && browser.entryCount == 3, "fixture catalog missing");
-      browser.selectorIndex = 2;
+      require(browser.entries && browser.entryCount == FIXTURE_ROWS && browser.hasSyncRow, "fixture catalog missing");
+      browser.selectorIndex = TIME_MACHINE_ROW;
       browser.topIndex = 0;
       browser.descriptionLines.emplace_back("Allocated preview text that must be released before TLS");
     }
-    browser.requestDownload(browser.entries[2]);
+    browser.requestDownload(browser.entries[TIME_MACHINE_ROW]);
     RenderLock lock;
     require(browser.state == State::DOWNLOADING, "download did not start");
     require(!browser.entries && browser.entryCount == 0, "catalog retained during download");
@@ -53,10 +56,11 @@ struct OpdsCatalogSmokeTest {
   static void restored(OpdsBookBrowserActivity& browser) {
     render();
     RenderLock lock;
-    require(browser.state == State::BROWSING && browser.entries && browser.entryCount == 3, "catalog not restored");
-    require(browser.selectorIndex == 2 && browser.topIndex == 0, "browsing position lost");
+    require(browser.state == State::BROWSING && browser.entries && browser.entryCount == FIXTURE_ROWS,
+            "catalog not restored");
+    require(browser.selectorIndex == TIME_MACHINE_ROW && browser.topIndex == 0, "browsing position lost");
     require(browser.currentPath == "/fiction" && browser.navigationHistory.size() == 1 &&
-                browser.navigationHistory[0].empty() && !browser.searchTemplate.empty(),
+                browser.navigationHistory[0].path.empty() && !browser.searchTemplate.empty(),
             "navigation/search lost");
     require(!browser.catalogReleasedForDownload, "release state not reset");
   }
@@ -65,7 +69,7 @@ struct OpdsCatalogSmokeTest {
     {
       RenderLock lock;
       browser.currentPath = "/fiction";
-      browser.navigationHistory.emplace_back("");
+      browser.navigationHistory.push_back(OpdsBookBrowserActivity::HistoryEntry{});
     }
     browser.fetchFeed(browser.currentPath);
     start(browser);
@@ -357,7 +361,7 @@ struct OpdsCatalogSmokeTest {
         browser->server.filenameFormat = OpdsFilenameFormat::TITLE_AUTHOR;
         browser->server.useServerFilename = false;
         require(Storage.writeFile("/books/The Time Machine - H. G. Wells.epub", "original"), "overwrite fixture");
-        browser->requestDownload(browser->entries[2]);
+        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
         require(browser->entries != nullptr, "catalog released before initial overwrite approval");
         break;
       case 6:
@@ -374,7 +378,7 @@ struct OpdsCatalogSmokeTest {
         require(Storage.mkdir("/books/Calibre"), "custom folder fixture");
         require(Storage.writeFile("/books/Calibre/The Time Machine - H. G. Wells.epub", "original"),
                 "custom collision");
-        browser->requestDownload(browser->entries[2]);
+        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
         require(browser->entries != nullptr, "custom folder ignored for overwrite lookup");
         break;
       case 8:
@@ -386,7 +390,7 @@ struct OpdsCatalogSmokeTest {
         require(Storage.remove("/books/Calibre/The Time Machine - H. G. Wells.epub"), "remove custom collision");
         browser->server.downloadFolder = "/";
         require(Storage.writeFile("/The Time Machine - H. G. Wells.epub", "original"), "root collision");
-        browser->requestDownload(browser->entries[2]);
+        browser->requestDownload(browser->entries[TIME_MACHINE_ROW]);
         require(browser->entries != nullptr, "root override ignored for overwrite lookup");
         break;
       case 10:
