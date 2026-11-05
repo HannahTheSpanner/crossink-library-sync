@@ -402,6 +402,54 @@ TEST(OpdsParserTest, SinkModeParserIsReusableAfterClear) {
   EXPECT_EQ(log.entries.size(), 3u);
 }
 
+TEST(OpdsParserTest, SinkModeCountsNavigationEntriesSeparately) {
+  // A mixed root page: two sub-catalogues, one book and a PDF-only book. Only
+  // the PDF should read as an unusable book to a caller.
+  std::string feed = "<?xml version='1.0'?><feed xmlns='http://www.w3.org/2005/Atom'>";
+  feed +=
+      "<entry><title>New</title><id>nav:new</id><link href='/new' rel='subsection' "
+      "type='application/atom+xml;profile=opds-catalog;kind=acquisition'/></entry>";
+  feed +=
+      "<entry><title>Authors</title><id>nav:authors</id><link href='/authors' rel='subsection' "
+      "type='application/atom+xml;profile=opds-catalog;kind=navigation'/></entry>";
+  feed +=
+      "<entry><title>Book</title><id>b:1</id><link href='/1.epub' rel='http://opds-spec.org/acquisition' "
+      "type='application/epub+zip'/></entry>";
+  feed +=
+      "<entry><title>Scan</title><id>b:2</id><link href='/2.pdf' rel='http://opds-spec.org/acquisition' "
+      "type='application/pdf'/></entry></feed>";
+  SinkLog log;
+  OpdsParser parser(&collectEntry, &log);
+  ASSERT_TRUE(parser.parse(feed.data(), feed.size()));
+  EXPECT_EQ(parser.getEntriesSeen(), 4u);
+  EXPECT_EQ(parser.getNavigationEntriesSeen(), 2u);
+  ASSERT_EQ(log.entries.size(), 3u);
+  EXPECT_EQ(log.entries[2].type, OpdsEntryType::BOOK);
+  EXPECT_EQ(parser.getEntriesSeen() - parser.getNavigationEntriesSeen() - 1, 1u);  // the PDF
+}
+
+TEST(OpdsParserTest, EntryResetRestoresDefaultsAndKeepsNothing) {
+  OpdsEntry entry;
+  entry.type = OpdsEntryType::BOOK;
+  entry.title = "T";
+  entry.author = "A";
+  entry.href = "h";
+  entry.id = "i";
+  entry.count = 7;
+  entry.description[0] = 'd';
+  entry.selfHref = "s";
+  entry.indirect = entry.unsupportedAcquisition = true;
+  entry.reset();
+  const OpdsEntry fresh;
+  EXPECT_EQ(entry.type, fresh.type);
+  EXPECT_TRUE(entry.title.empty() && entry.author.empty() && entry.href.empty() && entry.id.empty());
+  EXPECT_EQ(entry.count, fresh.count);
+  EXPECT_EQ(entry.description[0], '\0');
+  EXPECT_TRUE(entry.selfHref.empty());
+  EXPECT_FALSE(entry.indirect);
+  EXPECT_FALSE(entry.unsupportedAcquisition);
+}
+
 TEST(OpdsParserTest, NullSinkIsAnError) {
   OpdsParser parser(static_cast<OpdsEntrySink>(nullptr), nullptr);
   EXPECT_TRUE(parser.error());

@@ -12,17 +12,18 @@
 #include <OpdsJsonParser.h>
 #include <ZipFile.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <iterator>
 #include <utility>
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "OpdsSyncQueue.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "network/HttpDownloader.h"
+#include "network/RetryBackoff.h"
+#include "network/TlsRecordReserve.h"
 #include "util/BookCacheUtils.h"
 #include "util/OpdsDownloadFolder.h"
 #include "util/OpdsFeedError.h"
@@ -37,7 +38,6 @@ constexpr fui::ActionId ACTION_CONFIRM = 1;
 constexpr fui::ActionId ACTION_CANCEL = 2;
 constexpr char QUEUE_PATH[] = "/.crosspoint/opds_sync_queue.tsv";
 constexpr char PAGE_PATH[] = "/.crosspoint/opds_sync_page.tsv";
-constexpr char LEDGER_TMP_SUFFIX[] = ".tmp";
 constexpr size_t DOWNLOAD_BUFFER_SIZE = 2048;
 // Each progress refresh costs download time: an X4 Pro sync log fitted about
 // 0.6 s per refresh (20 per book at one per 5%), a third of a small book's
@@ -46,53 +46,11 @@ constexpr unsigned long DOWNLOAD_PROGRESS_INTERVAL_MS = 10000;
 constexpr unsigned long CATALOGUE_PROGRESS_MIN_UPDATE_MS = 3000;
 constexpr int DOWNLOAD_ATTEMPTS = 2;
 constexpr unsigned long RETRY_BACKOFF_MS = 1000;
-// Queue record link kinds: a direct EPUB, or an OPDS 2 publication document
-// to resolve to one before downloading.
-constexpr char LINK_EPUB[] = "e";
-constexpr char LINK_PUBLICATION[] = "p";
 // A publication document is small; do not accept an unbounded mistaken download.
 constexpr size_t MAX_PUBLICATION_BYTES = 256 * 1024;
 // The low 16 bits of a metadata entry carry the library index ordinal so a
 // metadata match can be checked against the card (the index may be stale).
 constexpr uint64_t ORDINAL_MASK = 0xFFFFULL;
-
-// Tabs and newlines delimit queue records; nothing else is reserved.
-void appendField(std::string& out, const std::string& value) {
-  std::transform(value.begin(), value.end(), std::back_inserter(out),
-                 [](const char c) { return (c == '\t' || c == '\n' || c == '\r') ? ' ' : c; });
-}
-
-void formatKey(const uint64_t key, char (&out)[17]) {
-  snprintf(out, sizeof(out), "%08lx%08lx", static_cast<unsigned long>(key >> 32),
-           static_cast<unsigned long>(key & 0xFFFFFFFFULL));
-}
-
-bool parseKey(const std::string_view text, uint64_t& out) {
-  if (text.size() != 16) return false;
-  uint64_t value = 0;
-  for (const char c : text) {
-    int digit = -1;
-    if (c >= '0' && c <= '9') digit = c - '0';
-    if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-    if (digit < 0) return false;
-    value = (value << 4) | static_cast<uint64_t>(digit);
-  }
-  out = value;
-  return true;
-}
-
-// Splits `line` at tabs into at most `count` fields.
-size_t splitFields(std::string_view line, std::string_view* fields, const size_t count) {
-  size_t found = 0;
-  while (found < count) {
-    const size_t tab = line.find('\t');
-    fields[found++] = line.substr(0, tab);
-    if (tab == std::string_view::npos) break;
-    line.remove_prefix(tab + 1);
-  }
-  return found;
-}
 
 bool validateEpub(const std::string& path) {
   ZipFile zip(path);
@@ -155,63 +113,6 @@ constexpr char SIM_PAGE_2[] = R"(<feed xmlns="http://www.w3.org/2005/Atom">
 
 }  // namespace
 
-// Buffered line reader over an open file. Records are bounded by the OPDS
-// parser's field limits, so a line that overflows the buffer can only come
-// from a damaged file; it is skipped whole rather than returned truncated.
-class OpdsLibrarySyncActivity::LineReader {
- public:
-  LineReader(HalFile& file, char* buffer, const size_t capacity) : file(file), buf(buffer), cap(capacity) {}
-
-  bool next(std::string_view& line) {
-    while (true) {
-      const void* newline = start < end ? memchr(buf + start, '\n', end - start) : nullptr;
-      if (newline) {
-        const size_t lineStart = start;
-        const size_t lineEnd = static_cast<size_t>(static_cast<const char*>(newline) - buf);
-        start = lineEnd + 1;
-        if (discarding) {
-          discarding = false;
-          continue;
-        }
-        line = std::string_view(buf + lineStart, lineEnd - lineStart);
-        return true;
-      }
-      if (eof) {
-        const bool hasTail = start < end && !discarding;
-        if (hasTail) line = std::string_view(buf + start, end - start);
-        start = end;
-        return hasTail;
-      }
-      if (start > 0) {
-        memmove(buf, buf + start, end - start);
-        end -= start;
-        start = 0;
-      }
-      if (end == cap) {
-        LOG_ERR(LOG_TAG, "Skipping over-long record");
-        discarding = true;
-        start = end = 0;
-        continue;
-      }
-      const int got = file.read(buf + end, cap - end);
-      if (got <= 0) {
-        eof = true;
-      } else {
-        end += static_cast<size_t>(got);
-      }
-    }
-  }
-
- private:
-  HalFile& file;
-  char* buf;
-  size_t cap;
-  size_t start = 0;
-  size_t end = 0;
-  bool eof = false;
-  bool discarding = false;
-};
-
 OpdsLibrarySyncActivity::OpdsLibrarySyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                  OpdsServer server, std::string feedUrl, std::string feedTitle)
     : Activity("OpdsLibrarySync", renderer, mappedInput),
@@ -233,9 +134,9 @@ void OpdsLibrarySyncActivity::onEnter() {
   goHomeAfterCancel = false;
   // Credentials are only ever sent to the configured server's origin.
   authorizationOrigin = UrlUtils::ensureProtocol(server.url);
-  char serverId[17];
-  formatKey(opds_sync::fnv1a64(authorizationOrigin), serverId);
-  ledgerPath = std::string("/.crosspoint/opds_sync_") + serverId + ".txt";
+  char serverId[OpdsSyncQueue::KEY_TEXT_SIZE];
+  OpdsSyncQueue::formatKey(opds_sync::fnv1a64(authorizationOrigin), serverId);
+  const std::string ledgerPath = std::string("/.crosspoint/opds_sync_") + serverId + ".txt";
 
   uiReady = false;
   applySharedUiTheme(app, uiTarget);
@@ -244,9 +145,11 @@ void OpdsLibrarySyncActivity::onEnter() {
   app.setScreen(&OpdsLibrarySyncActivity::rootScreen, this);
 
   // One record buffer serves the ledger load and the download queue.
-  recordBuffer = makeUniqueNoThrow<char[]>(RECORD_BUFFER_SIZE);
-  if (!recordBuffer) {
-    LOG_ERR(LOG_TAG, "OOM: record buffer");
+  recordBuffer = makeUniqueNoThrow<char[]>(OpdsSyncQueue::RECORD_BUFFER_SIZE);
+  queue =
+      recordBuffer ? makeUniqueNoThrow<OpdsSyncQueue>(QUEUE_PATH, PAGE_PATH, ledgerPath, recordBuffer.get()) : nullptr;
+  if (!queue) {
+    LOG_ERR(LOG_TAG, "OOM: sync queue");
     fail(tr(STR_MEMORY_ERROR));
     return;
   }
@@ -263,13 +166,11 @@ void OpdsLibrarySyncActivity::onEnter() {
 
 void OpdsLibrarySyncActivity::onExit() {
   uiReady = false;
-  pageFile.close();
-  queueReader.reset();
-  queueFile.close();
+  if (queue) queue->reset();
   libraryIndex.reset();
-  removeWorkFiles();
   presentKeys.clear();
   metadataKeys.clear();
+  queue.reset();  // before the record buffer it reads through
   recordBuffer.reset();
   if (downloaded > 0) library::invalidateLibraryIndex();
   Activity::onExit();
@@ -297,16 +198,8 @@ void OpdsLibrarySyncActivity::onCancelEvent(const fui::ActionEvent&, void* user)
 void OpdsLibrarySyncActivity::confirmPressed() {
   switch (phase) {
     case Phase::CONFIRM:
-      queueFile = Storage.open(QUEUE_PATH, O_RDONLY);
-      if (!queueFile) {
-        LOG_ERR(LOG_TAG, "Cannot open queue");
+      if (!queue->openForReading()) {
         fail(tr(STR_OPDS_SYNC_STORAGE_ERROR));
-        return;
-      }
-      queueReader = makeUniqueNoThrow<LineReader>(queueFile, recordBuffer.get(), RECORD_BUFFER_SIZE);
-      if (!queueReader) {
-        LOG_ERR(LOG_TAG, "OOM: queue reader");
-        fail(tr(STR_MEMORY_ERROR));
         return;
       }
       {
@@ -431,18 +324,19 @@ void OpdsLibrarySyncActivity::runScan() {
   }
   path[0] = '/';
   path[1] = '\0';
-  if (!scanDirectory(path.get(), 1, name.get(), 0) || !loadLedger()) {
+  size_t staleLedgerEntries = 0;
+  if (!scanDirectory(path.get(), 1, name.get(), 0) || !queue->loadLedger(presentKeys, staleLedgerEntries)) {
     fail(tr(STR_MEMORY_ERROR));
     return;
   }
   presentKeys.seal();
   addLibraryIndexKeys();
-  LOG_INF(LOG_TAG, "Local scan: %u EPUBs, %u keys, %u metadata entries in %lu ms", static_cast<unsigned>(localBooks),
-          static_cast<unsigned>(presentKeys.size()), static_cast<unsigned>(metadataKeys.size()), millis() - startMs);
+  LOG_INF(LOG_TAG, "Local scan: %u EPUBs, %u keys (%u stale ledger entries dropped), %u metadata entries in %lu ms",
+          static_cast<unsigned>(localBooks), static_cast<unsigned>(presentKeys.size()),
+          static_cast<unsigned>(staleLedgerEntries), static_cast<unsigned>(metadataKeys.size()), millis() - startMs);
 
   // A fresh queue for this run.
-  Storage.remove(QUEUE_PATH);
-  Storage.remove(PAGE_PATH);
+  queue->reset();
   pageUrl.clear();
   nextPageUrl = feedUrl;
   pagesFetched = catalogueBooks = unsupportedEntries = missingBooks = 0;
@@ -518,70 +412,6 @@ void OpdsLibrarySyncActivity::addLibraryIndexKeys() {
   if (metadataKeys.size() == 0) libraryIndex.reset();
 }
 
-// The ledger records books this device synced from this server, by their
-// stable OPDS identity, so a later rename on the server does not cause a
-// duplicate. Entries whose file has since gone are dropped, so deleting a
-// book locally means the next sync fetches it again (as library-sync does).
-bool OpdsLibrarySyncActivity::loadLedger() {
-  if (!Storage.exists(ledgerPath.c_str())) return true;
-  HalFile ledger = Storage.open(ledgerPath.c_str(), O_RDONLY);
-  if (!ledger) return true;
-
-  const std::string tmpPath = ledgerPath + LEDGER_TMP_SUFFIX;
-  HalFile kept = Storage.open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC);
-  size_t stale = 0;
-  bool ok = true;
-  LineReader reader(ledger, recordBuffer.get(), RECORD_BUFFER_SIZE);
-  std::string_view line;
-  std::string path;
-  while (reader.next(line)) {
-    std::string_view fields[2];
-    uint64_t key = 0;
-    if (splitFields(line, fields, 2) != 2 || !parseKey(fields[0], key) || fields[1].empty()) {
-      ++stale;
-      continue;
-    }
-    path.assign(fields[1].data(), fields[1].size());
-    if (!Storage.exists(path.c_str())) {
-      ++stale;
-      continue;
-    }
-    if (!presentKeys.add(key)) {
-      ok = false;
-      break;
-    }
-    if (kept) {
-      kept.write(line.data(), line.size());
-      kept.write(static_cast<uint8_t>('\n'));
-    }
-  }
-  ledger.close();
-  const bool keptOk = kept && kept.sync();
-  kept.close();
-  if (ok && stale > 0 && keptOk) {
-    Storage.remove(ledgerPath.c_str());
-    Storage.rename(tmpPath.c_str(), ledgerPath.c_str());
-    LOG_INF(LOG_TAG, "Ledger: dropped %u stale entries", static_cast<unsigned>(stale));
-  } else {
-    Storage.remove(tmpPath.c_str());
-  }
-  return ok;
-}
-
-void OpdsLibrarySyncActivity::appendLedger(const std::string& identity, const std::string& path) {
-  HalFile ledger = Storage.open(ledgerPath.c_str(), O_WRONLY | O_CREAT | O_APPEND);
-  if (!ledger) {
-    LOG_ERR(LOG_TAG, "Cannot append ledger %s", ledgerPath.c_str());
-    return;
-  }
-  std::string line = identity;
-  line.push_back('\t');
-  appendField(line, path);
-  line.push_back('\n');
-  ledger.write(line.data(), line.size());
-  ledger.close();
-}
-
 // ---------------------------------------------------------------------------
 // Catalogue walk
 
@@ -639,22 +469,8 @@ bool OpdsLibrarySyncActivity::onCatalogueEntry(void* context, OpdsEntry& entry) 
   const std::string absoluteHref = UrlUtils::resolveReference(self->pageUrl, link);
   if (self->isPresent(entry, absoluteHref)) return true;
 
-  char identity[17];
-  formatKey(opds_sync::remoteIdentityKey(entry.id, absoluteHref), identity);
-  std::string record;
-  record.reserve(absoluteHref.size() + entry.title.size() + entry.author.size() + 24);
-  record.append(identity);
-  record.push_back('\t');
-  record.append(publicationDocument ? LINK_PUBLICATION : LINK_EPUB);
-  record.push_back('\t');
-  appendField(record, absoluteHref);
-  record.push_back('\t');
-  appendField(record, entry.title);
-  record.push_back('\t');
-  appendField(record, entry.author);
-  record.push_back('\n');
-  if (self->pageFile.write(record.data(), record.size()) != record.size()) {
-    LOG_ERR(LOG_TAG, "Queue write failed");
+  if (!self->queue->appendPageRecord(opds_sync::remoteIdentityKey(entry.id, absoluteHref), publicationDocument,
+                                     absoluteHref, entry.title, entry.author)) {
     self->pageWriteFailed = true;
     return false;
   }
@@ -685,21 +501,27 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
 
   std::string pageNext;
   size_t pageSeen = 0;
+  size_t pageNavigation = 0;
   bool pageOk = false;
   auto result = HttpDownloader::OK;
   OpdsParserError parseError = OpdsParserError::NONE;
   HttpRequestDiagnostics diagnostics;
+  bool cancelledInBackoff = false;
   for (int attempt = 1; attempt <= PAGE_ATTEMPTS && !pageOk; ++attempt) {
-    if (attempt > 1) delay(RETRY_BACKOFF_MS * (attempt - 1));
+    if (attempt > 1 && retryBackoff(RETRY_BACKOFF_MS * (attempt - 1), [this] { return pollCancel(); })) {
+      cancelledInBackoff = true;
+      break;
+    }
+    // Best effort on X3/X4: the block may have been returned by an earlier
+    // connection whose server accepted small records.
+    TlsRecordReserve::acquire();
     // Each page opens a fresh HTTPS connection; on X3/X4 the largest free
     // block decides whether it and the parser fit.
     LOG_INF(LOG_TAG, "Page %u attempt %d: heap free=%u largest=%u", static_cast<unsigned>(pagesFetched + 1), attempt,
             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()));
     pageBooks = pageMissing = 0;
     pageWriteFailed = false;
-    pageFile = Storage.open(PAGE_PATH, O_WRONLY | O_CREAT | O_TRUNC);
-    if (!pageFile) {
-      LOG_ERR(LOG_TAG, "Cannot open page file");
+    if (!queue->beginPage()) {
       fail(tr(STR_OPDS_SYNC_STORAGE_ERROR));
       return;
     }
@@ -725,7 +547,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
 #endif
     if (result == HttpDownloader::OK) parser.flush();
 
-    const bool closed = pageFile.close();
+    const bool closed = queue->endPage();
     if (result == HttpDownloader::ABORTED && cancelRequested) {
       stopReason = StopReason::CANCELLED;
       if (goHomeAfterCancel) {
@@ -745,6 +567,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
       pageOk = true;
       pageNext = parser.getNextPageUrl();
       pageSeen = parser.getEntriesSeen();
+      pageNavigation = parser.getNavigationEntriesSeen();
       if (parser.hasGroupedPublications()) {
         LOG_INF(LOG_TAG, "Page %u: grouped previews skipped", static_cast<unsigned>(pagesFetched + 1));
       }
@@ -767,6 +590,16 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     }
   }
 
+  if (cancelledInBackoff) {
+    stopReason = StopReason::CANCELLED;
+    if (goHomeAfterCancel) {
+      onGoHome();
+      return;
+    }
+    mappedInput.suppressNextBackRelease();
+    finishWith(Phase::DONE);
+    return;
+  }
   if (!pageOk) {
     // library-sync stops before downloading anything when the catalogue
     // cannot be read completely; partial results would look like a full sync.
@@ -775,7 +608,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
     fail(message);
     return;
   }
-  if (!appendPageToQueue()) {
+  if (!queue->commitPage(pageMissing)) {
     fail(tr(STR_OPDS_SYNC_STORAGE_ERROR));
     return;
   }
@@ -783,7 +616,10 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   visitedPages[pagesFetched++] = pageKey;
   catalogueBooks += pageBooks;
   missingBooks += pageMissing;
-  unsupportedEntries += pageSeen > pageBooks ? pageSeen - pageBooks : 0;
+  // Entries that were neither a book with an EPUB nor a link to another
+  // feed: PDF-only books, and OPDS 2 purchase or LCP publications.
+  const size_t pageUsable = pageBooks + pageNavigation;
+  unsupportedEntries += pageSeen > pageUsable ? pageSeen - pageUsable : 0;
   nextPageUrl = pageNext.empty() ? std::string() : UrlUtils::resolveReference(pageUrl, pageNext);
 
   if (nextPageUrl.empty()) {
@@ -797,38 +633,7 @@ void OpdsLibrarySyncActivity::fetchNextPage() {
   }
 }
 
-bool OpdsLibrarySyncActivity::appendPageToQueue() {
-  if (pageMissing == 0) return true;
-  HalFile page = Storage.open(PAGE_PATH, O_RDONLY);
-  HalFile queue = Storage.open(QUEUE_PATH, O_WRONLY | O_CREAT | O_APPEND);
-  if (!page || !queue) {
-    LOG_ERR(LOG_TAG, "Cannot open queue files");
-    return false;
-  }
-  char* buffer = recordBuffer.get();
-  bool ok = true;
-  while (true) {
-    const int got = page.read(buffer, RECORD_BUFFER_SIZE);
-    if (got < 0) {
-      ok = false;
-      break;
-    }
-    if (got == 0) break;
-    if (queue.write(buffer, static_cast<size_t>(got)) != static_cast<size_t>(got)) {
-      ok = false;
-      break;
-    }
-  }
-  page.close();
-  if (!queue.close()) ok = false;
-  if (!ok) {
-    LOG_ERR(LOG_TAG, "Queue append failed");
-  }
-  return ok;
-}
-
 void OpdsLibrarySyncActivity::finishCatalogue() {
-  Storage.remove(PAGE_PATH);
   // Metadata checks are done; release the index handle before downloading.
   libraryIndex.reset();
   metadataKeys.clear();
@@ -841,26 +646,6 @@ void OpdsLibrarySyncActivity::finishCatalogue() {
 
 // ---------------------------------------------------------------------------
 // Downloads
-
-bool OpdsLibrarySyncActivity::readQueueRecord(std::string& identity, bool& publicationDocument, std::string& url,
-                                              std::string& title, std::string& author) {
-  std::string_view line;
-  while (queueReader && queueReader->next(line)) {
-    std::string_view fields[5];
-    if (splitFields(line, fields, 5) < 4 || fields[0].size() != 16 || fields[1].size() != 1 || fields[2].empty()) {
-      LOG_ERR(LOG_TAG, "Skipping malformed queue record");
-      ++failed;
-      continue;
-    }
-    identity.assign(fields[0].data(), fields[0].size());
-    publicationDocument = fields[1] == LINK_PUBLICATION;
-    url.assign(fields[2].data(), fields[2].size());
-    title.assign(fields[3].data(), fields[3].size());
-    author.assign(fields[4].data(), fields[4].size());
-    return true;
-  }
-  return false;
-}
 
 // Follows OPDS 2 publication documents to a direct EPUB link, as the browser's
 // loadPublication() does. On success `url` is the EPUB link.
@@ -908,16 +693,21 @@ bool OpdsLibrarySyncActivity::resolvePublication(std::string& url) {
 }
 
 void OpdsLibrarySyncActivity::downloadNext() {
-  std::string identity;
-  std::string url;
-  std::string title;
-  std::string author;
-  bool publicationDocument = false;
-  if (!readQueueRecord(identity, publicationDocument, url, title, author)) {
+  OpdsSyncQueue::Record record;
+  const size_t skippedBefore = queue->skippedRecords();
+  const bool haveRecord = queue->next(record);
+  // Damaged queue records count as failed books.
+  failed += queue->skippedRecords() - skippedBefore;
+  if (!haveRecord) {
     finishWith(Phase::DONE);
     return;
   }
   ++queueIndex;
+  std::string& identity = record.identity;
+  std::string& url = record.url;
+  const std::string& title = record.title;
+  const std::string& author = record.author;
+  const bool publicationDocument = record.publicationDocument;
 
   const std::string path = downloadPathFor(title, author);
   // With Use Server Filename the final name is known only from the response;
@@ -931,6 +721,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
     // a catalogue that lists the same book twice) is left as it is.
     if (Storage.exists(path.c_str())) {
       ++alreadyPresent;
+      requestUpdate();
       return;
     }
   }
@@ -968,7 +759,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
 #ifdef SIMULATOR
   (void)validateEpub;
   ++downloaded;
-  appendLedger(identity, path);
+  queue->appendLedger(identity, path);
   return;
 #else
   LOG_INF(LOG_TAG, "Book %u of %u: %s", static_cast<unsigned>(queueIndex), static_cast<unsigned>(missingBooks),
@@ -998,6 +789,8 @@ void OpdsLibrarySyncActivity::downloadNext() {
   HttpDownloader::DownloadError result = HttpDownloader::HTTP_ERROR;
   for (int attempt = 1;; ++attempt) {
     lastRenderedPercent = -1;
+    // See fetchNextPage(): a book may come from a host other than the catalogue's.
+    TlsRecordReserve::acquire();
     result = HttpDownloader::downloadToFile(
         url, path,
         [this, &lastRenderedPercent, &lastUpdateMs](const size_t done, const size_t total) {
@@ -1018,8 +811,7 @@ void OpdsLibrarySyncActivity::downloadNext() {
     }
     LOG_ERR(LOG_TAG, "Download attempt %d/%d failed (status %d); retrying: %s", attempt, DOWNLOAD_ATTEMPTS,
             responseStatus, title.c_str());
-    delay(RETRY_BACKOFF_MS);
-    if (pollCancel()) {
+    if (retryBackoff(RETRY_BACKOFF_MS, [this] { return pollCancel(); })) {
       result = HttpDownloader::ABORTED;
       break;
     }
@@ -1033,14 +825,14 @@ void OpdsLibrarySyncActivity::downloadNext() {
       if (!clearBookCachePreservingUserState(resolvedPath, true)) {
         LOG_ERR(LOG_TAG, "Book saved but cache refresh failed: %s", resolvedPath.c_str());
       }
-      appendLedger(identity, resolvedPath);
+      queue->appendLedger(identity, resolvedPath);
       break;
     case HttpDownloader::FILE_EXISTS:
       // Use Server Filename: the server's name for this book is already on
       // the card. Never replaced; remembered so the next sync skips it early.
       LOG_INF(LOG_TAG, "Already on the card as %s", resolvedPath.c_str());
       ++alreadyPresent;
-      appendLedger(identity, resolvedPath);
+      queue->appendLedger(identity, resolvedPath);
       break;
     case HttpDownloader::ABORTED:
       stopReason = StopReason::CANCELLED;
@@ -1069,11 +861,8 @@ void OpdsLibrarySyncActivity::downloadNext() {
 // State changes
 
 void OpdsLibrarySyncActivity::finishWith(const Phase next) {
-  pageFile.close();
-  queueReader.reset();
-  queueFile.close();
+  if (queue) queue->reset();
   libraryIndex.reset();
-  removeWorkFiles();
   phase = next;
   requestUpdate();
 }
@@ -1084,11 +873,6 @@ void OpdsLibrarySyncActivity::fail(const char* message) {
     errorMessage = message ? message : "";
   }
   finishWith(Phase::ERROR);
-}
-
-void OpdsLibrarySyncActivity::removeWorkFiles() {
-  if (Storage.exists(PAGE_PATH)) Storage.remove(PAGE_PATH);
-  if (Storage.exists(QUEUE_PATH)) Storage.remove(QUEUE_PATH);
 }
 
 // ---------------------------------------------------------------------------

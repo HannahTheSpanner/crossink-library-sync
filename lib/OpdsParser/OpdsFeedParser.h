@@ -23,6 +23,9 @@ class OpdsFeedParser final : public Print {
   bool wasTruncated() const { return xml ? xml->wasTruncated() : json && json->truncated(); }
   // Entries seen in the page, including unusable ones (see the parsers).
   size_t getEntriesSeen() const { return xml ? xml->getEntriesSeen() : json ? json->getEntriesSeen() : 0; }
+  // Navigation entries among those seen. OPDS 2 counts publications only, so
+  // its navigation rows are never part of getEntriesSeen().
+  size_t getNavigationEntriesSeen() const { return xml ? xml->getNavigationEntriesSeen() : 0; }
   // An OPDS 2 page whose publications sit inside groups (previews of other feeds).
   bool hasGroupedPublications() const { return json && json->grouped(); }
   const std::string& getSearchTemplate() const;

@@ -56,6 +56,23 @@ struct OpdsEntry {
   std::string selfHref;  // OPDS 2 publication metadata document
   bool indirect = false;
   bool unsupportedAcquisition = false;  // Purchase or LCP service required
+
+  // Back to the defaults without a temporary: `entry = OpdsEntry{}` puts a
+  // copy of the description array on the stack, inside parser callbacks that
+  // already sit at the deepest point of an HTTPS transfer. The strings keep
+  // their capacity for the next entry.
+  void reset() {
+    type = OpdsEntryType::NAVIGATION;
+    title.clear();
+    author.clear();
+    href.clear();
+    id.clear();
+    count = -1;
+    description[0] = '\0';
+    selfHref.clear();
+    indirect = false;
+    unsupportedAcquisition = false;
+  }
 };
 
 // Legacy alias for backward compatibility
@@ -197,6 +214,9 @@ class OpdsParser final : public Print {
   // or a usable link (for example PDF-only books). Lets a caller report how
   // much of a catalogue it could not use.
   size_t getEntriesSeen() const { return entriesSeen; }
+  // The subset of those that were navigation entries (links to other feeds),
+  // so a mixed page's sub-catalogues are not reported as unusable books.
+  size_t getNavigationEntriesSeen() const { return navigationEntriesSeen; }
 
   /**
    * Clear all parsed entries.
@@ -223,6 +243,7 @@ class OpdsParser final : public Print {
   size_t entryCapacity = 0;
   size_t entryCount = 0;
   size_t entriesSeen = 0;
+  size_t navigationEntriesSeen = 0;
   OpdsEntrySink sink = nullptr;
   void* sinkContext = nullptr;
   bool sinkStopped = false;

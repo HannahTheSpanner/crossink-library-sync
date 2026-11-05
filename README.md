@@ -172,7 +172,7 @@ Host tests for this fork's changes:
 
 ```sh
 cmake -S test -B build-tests
-cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibraryMatchTest TlsRecordReserveTest HttpDownloaderTest HttpDownloaderDevicePathTest
+cmake --build build-tests --target OpdsParserTest OpdsParserMemoryTest OpdsLibraryMatchTest OpdsSyncQueueTest TlsRecordReserveTest HttpDownloaderTest HttpDownloaderDevicePathTest
 ctest --test-dir build-tests -R "Opds|TlsRecordReserve|HttpDownloader"
 ```
 

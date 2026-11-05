@@ -85,7 +85,10 @@ bool acquire() {
   // previous behaviour) if even this early block is unavailable.
   block = static_cast<uint8_t*>(backend.allocate(RESERVE_BYTES));
   if (!block) {
-    LOG_ERR("TLS", "Could not reserve a %u-byte TLS record buffer", static_cast<unsigned>(RESERVE_BYTES));
+    // Expected once the heap has fragmented (a re-acquire before a download
+    // after the block was returned); the connection then falls back to
+    // allocating its buffer normally.
+    LOG_INF("TLS", "No %u-byte block free for a TLS record buffer", static_cast<unsigned>(RESERVE_BYTES));
     return false;
   }
   loggedSmallRecords = false;

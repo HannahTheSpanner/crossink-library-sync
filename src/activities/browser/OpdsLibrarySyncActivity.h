@@ -19,6 +19,7 @@
 namespace library {
 class LibraryIndexFile;
 }
+class OpdsSyncQueue;
 
 /**
  * Bulk "sync missing books" for an OPDS catalogue, ported from the KOReader
@@ -38,9 +39,9 @@ class LibraryIndexFile;
  * publication document when its turn to download comes.
  *
  * Memory stays flat regardless of catalogue size. Feed pages are parsed in
- * streaming mode, the missing-book queue lives on the SD card, and the only
- * structure that scales with the library is a sorted array of 8-byte keys for
- * the local books.
+ * streaming mode, the missing-book queue and the per-server ledger live on
+ * the SD card (OpdsSyncQueue), and the only structure that scales with the
+ * library is a sorted array of 8-byte keys for the local books.
  */
 class OpdsLibrarySyncActivity final : public Activity {
  public:
@@ -59,7 +60,6 @@ class OpdsLibrarySyncActivity final : public Activity {
   enum class StopReason : uint8_t { NONE, CANCELLED, SD_FULL };
 
   using UiApp = freeink::ui::FreeInkApp<8, 4>;
-  class LineReader;
 
   // Safety limits carried over from library-sync. A feed that loops or never
   // ends must not keep the radio up forever.
@@ -67,9 +67,6 @@ class OpdsLibrarySyncActivity final : public Activity {
   static constexpr int PAGE_ATTEMPTS = 3;
   // OPDS 2 indirect acquisitions, as the browser follows them.
   static constexpr int MAX_PUBLICATION_HOPS = 4;
-  // One queue record: identity, link kind, URL (parsers cap at 768), title
-  // (160) and author (120) plus separators, with headroom.
-  static constexpr size_t RECORD_BUFFER_SIZE = 1280;
   static constexpr int MAX_SCAN_DEPTH = 6;
   static constexpr size_t SCAN_PATH_SIZE = 256;
 
@@ -77,7 +74,6 @@ class OpdsLibrarySyncActivity final : public Activity {
   std::string feedUrl;
   std::string feedTitle;
   std::string authorizationOrigin;
-  std::string ledgerPath;
   // The server's effective download folder, normalised ("" or "/" is the SD root).
   std::string downloadFolder;
 
@@ -113,13 +109,12 @@ class OpdsLibrarySyncActivity final : public Activity {
   size_t pageBooks = 0;
   size_t pageMissing = 0;
   bool pageWriteFailed = false;
-  HalFile pageFile;
   unsigned long lastProgressRenderMs = 0;
 
-  // Download queue, read sequentially from the SD card.
+  // The SD-card queue and ledger; `recordBuffer` is the one buffer they read
+  // through, so it must outlive `queue`.
   std::unique_ptr<char[]> recordBuffer;
-  HalFile queueFile;
-  std::unique_ptr<LineReader> queueReader;
+  std::unique_ptr<OpdsSyncQueue> queue;
   size_t queueIndex = 0;
   std::string currentTitle;
   size_t currentProgress = 0;
@@ -148,19 +143,13 @@ class OpdsLibrarySyncActivity final : public Activity {
   void runScan();
   bool scanDirectory(char* path, size_t pathLen, char* name, int depth);
   void addLibraryIndexKeys();
-  bool loadLedger();
   void fetchNextPage();
-  bool appendPageToQueue();
   void finishCatalogue();
   void downloadNext();
-  bool readQueueRecord(std::string& identity, bool& publicationDocument, std::string& url, std::string& title,
-                       std::string& author);
   bool resolvePublication(std::string& url);
-  void appendLedger(const std::string& identity, const std::string& path);
   bool isPresent(const OpdsEntry& entry, const std::string& absoluteHref);
   bool metadataPresent(uint64_t key);
   std::string downloadPathFor(const std::string& title, const std::string& author) const;
   void finishWith(Phase next);
   void fail(const char* message);
-  void removeWorkFiles();
 };

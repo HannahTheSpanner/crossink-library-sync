@@ -51,6 +51,7 @@ jobs:
         run: |
           targets="OpdsParserTest"
           if [ -d test/opds_library_match ]; then targets="$targets OpdsLibraryMatchTest"; fi
+          if [ -d test/opds_sync_queue ]; then targets="$targets OpdsSyncQueueTest"; fi
           if [ -d test/tls_record_reserve ]; then targets="$targets TlsRecordReserveTest"; fi
           if [ -d test/opds_parser_memory ]; then targets="$targets OpdsParserMemoryTest"; fi
           if [ -d test/http_downloader ]; then targets="$targets HttpDownloaderTest HttpDownloaderDevicePathTest"; fi
