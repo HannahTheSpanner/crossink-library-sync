@@ -9,6 +9,10 @@
 #define BITTER_12_FONT_ID (313087974)
 #define BITTER_14_FONT_ID (-76463891)
 #define BITTER_16_FONT_ID (-864319200)
+#define EBGARAMOND_10_FONT_ID (-421141661)
+#define EBGARAMOND_12_FONT_ID (918933218)
+#define EBGARAMOND_14_FONT_ID (-1784021465)
+#define EBGARAMOND_16_FONT_ID (1095143239)
 #define UI_10_FONT_ID (-1313900173)
 #define UI_12_FONT_ID (1544960787)
 #define SMALL_FONT_ID (1406075677)
@@ -23,6 +27,10 @@ static_assert(BITTER_10_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(BITTER_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(BITTER_14_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(BITTER_16_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(EBGARAMOND_10_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(EBGARAMOND_12_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(EBGARAMOND_14_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(EBGARAMOND_16_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(UI_10_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(UI_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(SMALL_FONT_ID != 0, "Font ID collision with sentinel");
