@@ -39,6 +39,14 @@ emit_hash_define BITTER_14_FONT_ID \
   ./bitter_14_regular.h ./bitter_14_bold.h ./bitter_14_bolditalic.h ./bitter_14_italic.h
 emit_hash_define BITTER_16_FONT_ID \
   ./bitter_16_regular.h ./bitter_16_bold.h ./bitter_16_bolditalic.h ./bitter_16_italic.h
+emit_hash_define EBGARAMOND_10_FONT_ID \
+  ./ebgaramond_10_regular.h ./ebgaramond_10_bold.h ./ebgaramond_10_bolditalic.h ./ebgaramond_10_italic.h
+emit_hash_define EBGARAMOND_12_FONT_ID \
+  ./ebgaramond_12_regular.h ./ebgaramond_12_bold.h ./ebgaramond_12_bolditalic.h ./ebgaramond_12_italic.h
+emit_hash_define EBGARAMOND_14_FONT_ID \
+  ./ebgaramond_14_regular.h ./ebgaramond_14_bold.h ./ebgaramond_14_bolditalic.h ./ebgaramond_14_italic.h
+emit_hash_define EBGARAMOND_16_FONT_ID \
+  ./ebgaramond_16_regular.h ./ebgaramond_16_bold.h ./ebgaramond_16_bolditalic.h ./ebgaramond_16_italic.h
 
 # UI fonts
 emit_hash_define UI_10_FONT_ID ./inter_10_regular.h ./inter_10_bold.h ./ui_symbols_10.h
@@ -51,6 +59,7 @@ echo "// Guard against any hash accidentally producing 0."
 for id in \
   LEXENDDECA_10_FONT_ID LEXENDDECA_12_FONT_ID LEXENDDECA_14_FONT_ID LEXENDDECA_16_FONT_ID \
   BITTER_10_FONT_ID BITTER_12_FONT_ID BITTER_14_FONT_ID BITTER_16_FONT_ID \
+  EBGARAMOND_10_FONT_ID EBGARAMOND_12_FONT_ID EBGARAMOND_14_FONT_ID EBGARAMOND_16_FONT_ID \
   UI_10_FONT_ID UI_12_FONT_ID SMALL_FONT_ID; do
   echo "static_assert(${id} != 0, \"Font ID collision with sentinel\");"
 done

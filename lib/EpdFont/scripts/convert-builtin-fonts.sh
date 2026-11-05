@@ -163,10 +163,26 @@ generate_reading_fonts() {
   echo "Generating built-in reading fonts..."
   generate_family lexenddeca LexendDeca LexendDeca yes
   generate_family bitter Bitter Bitter yes
+  # EB Garamond's "Regular" and "Italic" sources are its Medium weights, as
+  # Bitter's are, so thin strokes hold up on e-ink.
+  generate_family ebgaramond EBGaramond EBGaramond yes
   echo ""
   echo "Built-in reading fonts complete."
   echo ""
 }
+
+# ONLY_READING_FAMILY=<name> regenerates just that reading family (for example
+# ebgaramond) and stops, leaving every other header untouched.
+if [[ -n "${ONLY_READING_FAMILY:-}" ]]; then
+  case "$ONLY_READING_FAMILY" in
+    lexenddeca) generate_family lexenddeca LexendDeca LexendDeca yes ;;
+    bitter) generate_family bitter Bitter Bitter yes ;;
+    ebgaramond) generate_family ebgaramond EBGaramond EBGaramond yes ;;
+    *) echo "Unknown reading family: $ONLY_READING_FAMILY" >&2; exit 1 ;;
+  esac
+  python verify_compression.py ../builtinFonts/
+  exit 0
+fi
 
 # Built-in reader fonts retain the PHM fallback ranges, but exclude emoticons.
 generate_reading_fonts

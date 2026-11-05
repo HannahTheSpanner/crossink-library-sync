@@ -1,0 +1,61 @@
+name: Generate reader font headers
+
+# Converts a built-in reading family's TTF sources into the bitmap headers the
+# X3/X4 firmware embeds (lib/EpdFont/builtinFonts/<family>_<size>_<style>.h),
+# using lib/EpdFont/scripts/convert-builtin-fonts.sh with the same converter
+# options as every other reading family, then regenerates src/fontIds.h.
+# The results are uploaded as an artifact to review and commit; nothing is
+# pushed from here. Runs when a family's sources change, or on demand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      family:
+        description: "Reading family to generate (lexenddeca, bitter or ebgaramond)"
+        required: true
+        default: ebgaramond
+  push:
+    paths:
+      - "lib/EpdFont/builtinFonts/source/EBGaramond/**"
+      - ".github/workflows/generate-reader-fonts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    env:
+      FAMILY: ${{ inputs.family || 'ebgaramond' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install font tools
+        run: python -m pip install freetype-py fonttools zopfli
+
+      - name: Generate ${{ env.FAMILY }} headers
+        env:
+          ONLY_READING_FAMILY: ${{ env.FAMILY }}
+        run: bash lib/EpdFont/scripts/convert-builtin-fonts.sh
+
+      - name: Regenerate font IDs
+        run: bash lib/EpdFont/scripts/build-font-ids.sh > src/fontIds.h
+
+      - name: Header sizes
+        run: |
+          {
+            echo "## ${FAMILY} headers"
+            ls -l lib/EpdFont/builtinFonts/${FAMILY}_*.h | awk '{print "- " $9 ": " $5 " bytes"}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: reader-font-${{ env.FAMILY }}
+          path: |
+            lib/EpdFont/builtinFonts/${{ env.FAMILY }}_*.h
+            src/fontIds.h
+          if-no-files-found: error
