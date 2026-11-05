@@ -4,8 +4,9 @@ name: Generate reader font headers
 # X3/X4 firmware embeds (lib/EpdFont/builtinFonts/<family>_<size>_<style>.h),
 # using lib/EpdFont/scripts/convert-builtin-fonts.sh with the same converter
 # options as every other reading family, then regenerates src/fontIds.h.
-# The results are uploaded as an artifact to review and commit; nothing is
-# pushed from here. Runs when a family's sources change, or on demand.
+# The results are uploaded as an artifact. On a branch other than main they
+# are also committed back to that branch, so the firmware build that follows
+# uses them. Runs when a family's sources change, or on demand.
 
 on:
   workflow_dispatch:
@@ -20,7 +21,7 @@ on:
       - ".github/workflows/generate-reader-fonts.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   generate:
@@ -59,3 +60,15 @@ jobs:
             lib/EpdFont/builtinFonts/${{ env.FAMILY }}_*.h
             src/fontIds.h
           if-no-files-found: error
+
+      - name: Commit headers to the branch
+        if: github.ref != 'refs/heads/main' && startsWith(github.ref, 'refs/heads/')
+        run: |
+          git add -f "lib/EpdFont/builtinFonts/${FAMILY}_"*.h src/fontIds.h
+          if git diff --cached --quiet; then
+            echo "Headers already up to date"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "build: generate ${FAMILY} reader font headers [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
