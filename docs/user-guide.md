@@ -609,7 +609,7 @@ If new images are not being picked, upload them through **File Transfer** or
 
 ### 3.9 Custom Fonts (SD Card)
 
-CrossInk can load extra fonts from the SD card, beyond the built-in Lexend Deca and Bitter families. Custom fonts can cover more scripts, including CJK (Chinese, Japanese, Korean).
+CrossInk can load extra fonts from the SD card, beyond the built-in Lexend Deca and Bitter families (and EB Garamond on the X4 Classic, X4 Pro, Sticky and Picco). On the X3 and X4, this fork's EB Garamond is an SD font: copy the `EB Garamond` folder from a release's `EB-Garamond-SD-font.zip` to `/.fonts/`. Custom fonts can cover more scripts, including CJK (Chinese, Japanese, Korean).
 
 There are three ways to install fonts:
 

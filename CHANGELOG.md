@@ -6,6 +6,7 @@ This fork is now based on CrossInk v2.0.0 (its release candidate of 2026-11-04).
 
 - Firmware for the Seeed reTerminal Sticky and the BOOX Picco, alongside the Xteink X3/X4, X4 Classic and X4 Pro.
 - Sync missing books works with OPDS 2 (JSON) catalogs as well as OPDS 1 (Atom). OPDS 2 books that link to a publication page rather than the EPUB are resolved before downloading, as the browser does; books that must be bought or need LCP are counted and skipped. On an OPDS 2 page whose books are only previews of its groups, the sync row offers the page's "All Books" catalog instead of the previews.
+- EB Garamond reader font (SIL Open Font License 1.1). On the X4 Classic, X4 Pro, Sticky and Picco it is a third built-in font family next to Lexend Deca and Bitter, scalable from 8 to 22 pt. It does not fit in the X3/X4 firmware, so releases include it as an SD card font (`EB-Garamond-SD-font.zip`, 8 to 20 pt) for those readers.
 
 ### Changed
 

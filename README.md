@@ -2,7 +2,7 @@
 
 This is my personal fork of [CrossInk](https://github.com/uxjulia/crossink), my preferred of the popular forks of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader), the open firmware for Xteink e-readers.
 
-It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
+It is CrossInk v2.0.0 with one feature added, bulk syncing of an OPDS library, plus the fixes that feature needed on the X3 and X4, and one extra reader font, EB Garamond. It builds for every device CrossInk supports: the Xteink X3, X4, X4 Classic and X4 Pro, the Seeed reTerminal Sticky and the BOOX Picco. Everything else is the work of the CrossPoint team and uxjulia, and behaves exactly as it does upstream: the reader itself, the other fonts, themes, reading stats, controls and so on. See [Credits and support](#credits-and-support) for links to both projects.
 
 > **A note on credit.** I take no credit for the work in this fork. Claude, Anthropic’s AI model, wrote the code, chased down the bugs and wrote these docs. My role was project management in the loosest possible sense: describing what I wanted, plugging in a USB cable, pasting serial logs, and announcing “it still doesn’t work” with the confidence of someone who could not have fixed it herself.
 >
@@ -89,6 +89,15 @@ The full user guide is in [Syncing missing books](./docs/user-guide.md#syncing-m
 - Brief connection failures and server errors (408, 429, 5xx) are retried automatically: catalogue pages up to three times, downloads twice, with a short back-off. CrossInk v2.0.0 already resumes a download that is cut short; these retries cover server errors and fresh starts. Errors that won't change on retry, such as a rejected login or a missing page, are not retried.
 - Catalogue errors use CrossInk v2.0.0's messages (login rejected, server error, unreachable). Download errors add the server's HTTP status, for example "Download failed (HTTP 404)".
 - **Retry** after a failed download retries that book instead of reloading the catalogue page, and **Back** returns to the book list.
+
+### 5. EB Garamond reader font
+
+[EB Garamond](https://github.com/octaviopardo/EBGaramond12) by Georg Duffner and Octavio Pardo, a classic old-style serif, is added as a reader font. It is released under the SIL Open Font License 1.1, which is included next to the font files.
+
+- **X4 Classic, X4 Pro, Sticky and Picco:** built in, next to Lexend Deca and Bitter, as a scalable font from 8 to 22 pt. Choose it in **Settings > Reader > Font Options > Font Family** or the reader's font menu.
+- **X3 and X4:** not built in. These readers have no scalable fonts, and EB Garamond's pre-rendered sizes do not fit in their firmware partition next to CrossInk v2.0.0. Each release instead includes `EB-Garamond-SD-font.zip`: unzip it and copy the `EB Garamond` folder to `/.fonts/` on the SD card. It then appears in the font list like any SD font, in sizes from 8 to 20 pt.
+
+Regular and italic text use EB Garamond's Medium weight, which holds up better on e-ink than the thinner Regular (Bitter's built-in copy does the same). Both copies cover Latin, Greek and Cyrillic.
 
 ## Credit: Library Sync for KOReader
 
