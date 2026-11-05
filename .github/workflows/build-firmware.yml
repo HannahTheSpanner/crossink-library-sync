@@ -7,6 +7,8 @@ name: Build firmware
 #   x4-pro     -> Xteink X4 Pro (X4P)
 #   sticky     -> Seeed reTerminal Sticky
 #   picco      -> BOOX Picco (app-slot image; see docs/picco.md)
+#   metalio-eink4 -> Metalio E-Ink 4 (plus a full-flash image for USB installs)
+#   eego-a4    -> EEGO Reader A4 (plus a full-flash image for USB installs)
 # plus the EB Garamond SD font pack for the X3/X4, whose firmware has no room
 # for it as a built-in font.
 
@@ -82,6 +84,14 @@ jobs:
           - environment: picco
             firmware: firmware-picco
             device: BOOX Picco
+          - environment: metalio-eink4
+            firmware: firmware-metalio-eink4
+            device: Metalio E-Ink 4
+            full_image: true
+          - environment: eego-a4
+            firmware: firmware-eego-a4
+            device: EEGO Reader A4
+            full_image: true
     steps:
       - uses: actions/checkout@v6
         with:
@@ -133,11 +143,17 @@ jobs:
             grep -E "RAM:\s|Flash:\s" pio-${{ matrix.environment }}.log | while read -r line; do echo "- ${line}"; done
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check the full-flash image
+        if: matrix.full_image
+        run: test -s ".pio/build/${{ matrix.environment }}/${{ matrix.firmware }}-full.bin"
+
       - name: Upload firmware
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.firmware }}
-          path: .pio/build/${{ matrix.environment }}/${{ matrix.firmware }}.bin
+          path: |
+            .pio/build/${{ matrix.environment }}/${{ matrix.firmware }}.bin
+            .pio/build/${{ matrix.environment }}/${{ matrix.firmware }}-full.bin
           if-no-files-found: error
 
   sd-font:

@@ -139,14 +139,17 @@ bool HalStorage::begin() {
 bool HalStorage::ready() const { return SDCard.ready(); }
 
 bool HalStorage::beginUsbDrive() {
-#if FREEINK_CAP_USB_MSC && FREEINK_SD_SDMMC
+#if FREEINK_CAP_USB_MSC
   if (!usbDriveContext) {
     LOG_ERR("USB", "USB Drive context allocation failed");
     return false;
   }
+  // SDMMC and SPI cards both hand over their block device: the SDK's
+  // SDCardManager build hook enables SdFat's block-device seam for SPI
+  // whenever FREEINK_CAP_USB_MSC is set (EEGO A4).
   auto* const blockDevice = SDCard.detachFilesystemForRawAccess();
   if (!blockDevice) {
-    LOG_ERR("USB", "USB Drive requires a mounted SDMMC filesystem");
+    LOG_ERR("USB", "USB Drive requires a mounted SD filesystem");
     return false;
   }
   if (!usbDriveContext->massStorage.begin(blockDevice)) {

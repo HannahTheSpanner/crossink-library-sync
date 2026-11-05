@@ -11,8 +11,15 @@
 
 #include "HalGPIO.h"
 
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_EEGO_A4
 #include <HalFrontlight.h>
+#endif
+
+#if FREEINK_DEVICE_METALIO_EINK4
+#include <MetalioEInk4Board.h>
+#endif
+
+#if FREEINK_DEVICE_PICCO
 #include <driver/gpio.h>
 #include <esp_attr.h>
 #include <esp_rtc_time.h>
@@ -143,7 +150,10 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
-#if FREEINK_DEVICE_PICCO
+#if FREEINK_DEVICE_PICCO || FREEINK_DEVICE_EEGO_A4
+  // The frontlight driver and touch share an I2C bus; turn the light off
+  // before touch releases the bus. Picco also puts its TMA525C to sleep, and
+  // the EEGO A4 parks its GSLX680 and holds the touch reset low.
   Frontlight.setOn(false);
   if (!gpio.prepareForDeepSleep()) LOG_ERR("PWR", "Touch sleep preparation failed");
 #endif
@@ -197,6 +207,13 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
+
+#if FREEINK_DEVICE_METALIO_EINK4
+  // Deep sleep leaves the board, its 4G modem and audio module powered, so
+  // cut the power instead; the power button cold-boots the device. The helper
+  // returns only while USB keeps the board up, and then deep sleep follows.
+  if (!freeink::metalio::powerOff()) LOG_ERR("PWR", "Metalio power-off request failed");
+#endif
 
   // The SDK convenience helper currently isolates every GPIO after arming the
   // wake source. On the ESP32-C3 that overwrites the power pin's sleep input

@@ -49,6 +49,25 @@ namespace {
 constexpr bool TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH = true;
 constexpr int sleepBuildInfoSideMargin = 20;
 
+// Sleep screens paint with a single HALF refresh (see renderDefaultSleepScreen).
+// Metalio: B/W sleep images use the full 0xF7 waveform instead of HALF (two
+// 0xFC partials), matching the clean pass before absolute gray below.
+#if FREEINK_DEVICE_METALIO_EINK4
+constexpr auto SLEEP_CLEAN_REFRESH = HalDisplay::FULL_REFRESH;
+#else
+constexpr auto SLEEP_CLEAN_REFRESH = HalDisplay::HALF_REFRESH;
+#endif
+
+// The absolute gray paint has no base pass. On Metalio the prior screen shows
+// through it after the panel sits unpowered, so clean with 0xF7 first.
+void cleanBeforeAbsoluteGray(GfxRenderer& renderer) {
+#if FREEINK_DEVICE_METALIO_EINK4
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+#else
+  (void)renderer;
+#endif
+}
+
 ImageToneProfile bookCoverToneProfile(const GfxRenderer& renderer) {
   if (SETTINGS.sleepScreenCoverFilter != CrossPointSettings::NO_FILTER) return ImageToneProfile::Legacy;
 #if FREEINK_DEVICE_PICCO
@@ -733,7 +752,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 118, visibleBuildInfo.c_str(), lightSleepScreen);
 #endif
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 SleepActivity::BitmapPlacement SleepActivity::prepareSleepBitmap(Bitmap& bitmap) const {
@@ -819,7 +838,7 @@ bool SleepActivity::renderBitmapSleepScreen(Bitmap& bitmap) const {
   }
 
   if (!hasGreyscale) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+    renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
     return true;
   }
 
@@ -827,8 +846,13 @@ bool SleepActivity::renderBitmapSleepScreen(Bitmap& bitmap) const {
   // base into the grayscale pass rather than pushing a separate base refresh
   // first. Cover tone selection is independent of the panel refresh mode.
   if (absolute) {
+    // Direct skipped the B/W draw above, so only a drawn base can be cleaned.
+    if (!direct) cleanBeforeAbsoluteGray(renderer);
     if (!(direct ? renderer.displayDirectGrayscaleBase() : renderer.displayAbsoluteGrayscaleBase())) return false;
   } else {
+    // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
+    // calibrated against the pixel state the single-pass HALF waveform leaves
+    // behind.
     renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
   }
 
@@ -923,7 +947,7 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
   if (!sleepCoverFilterInvertsGeneratedScreen()) {
     renderer.invertScreen();
   }
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderMinimalSleepScreen() const {
@@ -944,7 +968,7 @@ void SleepActivity::renderMinimalSleepScreen() const {
   theme.drawSleepScreen(renderer, book,
                         BookStatsTracking::isEnabled(bookStatsCachePathFor(path)) ? &bookStats : nullptr,
                         progressPercent, sleepCoverFilterInvertsGeneratedScreen());
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderMinimalStatsSleepScreen() const {
@@ -965,7 +989,7 @@ void SleepActivity::renderMinimalStatsSleepScreen() const {
   MinimalTheme theme;
   theme.drawStatsSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent,
                              sleepCoverFilterInvertsGeneratedScreen());
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderDashboardSleepScreen() const {
@@ -991,7 +1015,7 @@ void SleepActivity::renderDashboardSleepScreen() const {
   DashboardTheme theme;
   theme.drawSleepScreen(renderer, book, &bookStats, &globalStats, progressPercent, chapterTitle.c_str(),
                         sleepCoverFilterInvertsGeneratedScreen());
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {
@@ -1013,7 +1037,7 @@ void SleepActivity::renderLastScreenSleepScreen() const {
 
 void SleepActivity::renderBlankSleepScreen() const {
   renderer.clearScreen();
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
 void SleepActivity::renderOverlaySleepScreen(Bitmap* cover) const {
@@ -1126,10 +1150,14 @@ void SleepActivity::renderOverlaySleepScreen(Bitmap* cover) const {
       file.close();
       return OverlayDrawResult::Failed;
     }
-    if (cover && cover->hasGreyscale() && SETTINGS.sleepScreenCoverFilter == CrossPointSettings::NO_FILTER &&
-        renderer.supportsAbsoluteGrayscale() &&
-        (renderer.supportsDirectGrayscale() ? renderer.displayDirectGrayscaleBase()
-                                            : renderer.displayAbsoluteGrayscaleBase())) {
+    const bool absoluteOverlayCover = cover && cover->hasGreyscale() &&
+                                      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::NO_FILTER &&
+                                      renderer.supportsAbsoluteGrayscale();
+    // The composed frame replaces the previous screen, so clean it like the
+    // plain BMP path does before its gray planes.
+    if (absoluteOverlayCover) cleanBeforeAbsoluteGray(renderer);
+    if (absoluteOverlayCover && (renderer.supportsDirectGrayscale() ? renderer.displayDirectGrayscaleBase()
+                                                                    : renderer.displayAbsoluteGrayscaleBase())) {
       bool success = true;
       for (const auto mode : {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB}) {
         renderer.setRenderMode(mode);
@@ -1235,6 +1263,7 @@ void SleepActivity::renderOverlaySleepScreen(Bitmap* cover) const {
 
     const bool absolute = renderer.supportsAbsoluteGrayscale();
     if (!absolute) return OverlayDrawResult::Drawn;
+    cleanBeforeAbsoluteGray(renderer);
     if (!(renderer.supportsDirectGrayscale() ? renderer.displayDirectGrayscaleBase()
                                              : renderer.displayAbsoluteGrayscaleBase())) {
       return OverlayDrawResult::Drawn;
@@ -1364,7 +1393,7 @@ void SleepActivity::renderOverlaySleepScreen(Bitmap* cover) const {
   // over the sleep image.
   const bool shouldRunGrayscalePass = shouldUseReaderPageBackground && backgroundSupportsGrayscale && !overlayDrawn &&
                                       (backgroundWasRebuilt || (overlayBackgroundBufferStored && !path.empty()));
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, !shouldRunGrayscalePass && TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.displayBuffer(SLEEP_CLEAN_REFRESH, !shouldRunGrayscalePass && TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 
   if (!shouldRunGrayscalePass) {
     return;

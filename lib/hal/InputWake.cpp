@@ -22,7 +22,18 @@ StaticSemaphore_t sampleStorage, stoppedStorage, modeStorage;
 SemaphoreHandle_t sampleSignal = nullptr, stoppedSignal = nullptr, modeMutex = nullptr;
 uint64_t wakePins = 0;
 constexpr uint32_t ADC_POLL_MS = 10;
+#if FREEINK_DEVICE_METALIO_EINK4
+// The Metalio's page buttons sit behind a TCA9555 I2C expander, so each sample
+// is a Wire transfer (through the SDK's shared-bus lock) rather than a GPIO
+// read. Give the task the headroom the I2C driver needs; the board has PSRAM
+// and this static stack costs 2 KB of internal RAM once.
+constexpr uint32_t CAPTURE_STACK_BYTES = 4096;
+// No GPIO edge announces an expander button, so poll it at close to the
+// expander helper's own 20 ms sample cadence instead of the 250 ms fallback.
+constexpr uint32_t POLLED_BUTTON_IDLE_MS = 20;
+#else
 constexpr uint32_t CAPTURE_STACK_BYTES = 2048;
+#endif
 // A separate, never-begun decoder reads existing SDK button mappings without
 // initializing touch/I2C a second time. Only this task accesses its state.
 InputManager captureDecoder;
@@ -142,7 +153,12 @@ void captureButtons(void*) {
     const bool analog = BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder;
     const bool sharedHeld = BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold &&
                             captureDecoder.isPowerButtonPhysicallyPressed();
-    const uint32_t waitMs = debouncing || (analog && held) ? 2 : analog || sharedHeld || wakePins == 0 ? 10 : 250;
+#if FREEINK_DEVICE_METALIO_EINK4
+    const uint32_t idleMs = POLLED_BUTTON_IDLE_MS;
+#else
+    const uint32_t idleMs = 250;
+#endif
+    const uint32_t waitMs = debouncing || (analog && held) ? 2 : analog || sharedHeld || wakePins == 0 ? 10 : idleMs;
     const TickType_t ticks = pdMS_TO_TICKS(waitMs);
     xSemaphoreTake(sampleSignal, ticks > 0 ? ticks : 1);
   }

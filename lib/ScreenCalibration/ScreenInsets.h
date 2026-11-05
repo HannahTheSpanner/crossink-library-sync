@@ -9,6 +9,12 @@ struct ScreenInsets {
   static constexpr uint8_t MAX_INSET = 32;
 #if defined(FREEINK_DEVICE_STICKY) && FREEINK_DEVICE_STICKY
   std::array<uint8_t, 4> edges{{0, 0, 0, 0}};  // Top, right, bottom, left.
+#elif defined(FREEINK_DEVICE_EEGO_A4) && FREEINK_DEVICE_EEGO_A4
+  // The A4's bezel overlaps more of the panel than the Xteink readers' and its
+  // corners are rounded (24 px). These are the SDK profile's straight-edge
+  // allowances (BoardConfig::EEGO_A4.viewableInsets); main.cpp checks the two
+  // agree. Screen Calibration can still adjust them per device.
+  std::array<uint8_t, 4> edges{{24, 8, 16, 8}};
 #else
   std::array<uint8_t, 4> edges{{9, 3, 3, 3}};
 #endif

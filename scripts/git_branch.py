@@ -156,7 +156,14 @@ def get_hardware_version(project_dir, pioenv):
         if os.environ.get('CROSSINK_RELEASE_VERSION')
         else get_crossink_version(project_dir)
     )
-    device_suffix = {'sticky': '-sticky', 'x4-pro': '-x4-pro', 'x4-classic': '-x4-classic', 'picco': '-picco'}[pioenv]
+    device_suffix = {
+        'sticky': '-sticky',
+        'x4-pro': '-x4-pro',
+        'x4-classic': '-x4-classic',
+        'picco': '-picco',
+        'metalio-eink4': '-metalio-eink4',
+        'eego-a4': '-eego-a4',
+    }[pioenv]
     return f'{base_version}{device_suffix}'
 
 
@@ -200,7 +207,7 @@ def inject_version(env):
         ('CROSSINK_GIT_DIRTY', f'\\"{get_git_dirty(project_dir)}\\"'),
     ]
 
-    if pioenv in {'default', 'sticky', 'x4-pro', 'x4-classic', 'picco'}:
+    if pioenv in {'default', 'sticky', 'x4-pro', 'x4-classic', 'picco', 'metalio-eink4', 'eego-a4'}:
         version_string = get_hardware_version(project_dir, pioenv)
         if os.environ.get('CROSSINK_RC_HASH'):
             print(f'CrossInk RC build version: {version_string}')
@@ -234,7 +241,7 @@ def inject_version(env):
         ])
         print(f'CrossInk test build version: {ci_version}{suffix}')
 
-    elif pioenv in {'x4-pro-debug', 'x4-classic-debug', 'picco-debug'}:
+    elif pioenv in {'x4-pro-debug', 'x4-classic-debug', 'picco-debug', 'metalio-eink4-debug', 'eego-a4-debug'}:
         branch = get_git_branch(project_dir)
         short_hash = get_git_short_hash(project_dir)
         ci_version = get_crossink_version(project_dir)
