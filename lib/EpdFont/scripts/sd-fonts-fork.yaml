@@ -1,0 +1,21 @@
+# SD card fonts this fork attaches to its releases (same format as sd-fonts.yaml).
+#
+# EB Garamond is built into the ESP32-S3 readers (X4 Classic, X4 Pro, Sticky,
+# Picco) as a scalable font. Its bitmaps do not fit the X3/X4 app partition
+# next to CrossInk v2.0.0, so those readers get it as this .cpfont pack instead.
+# Like the built-in copy, regular and italic use the Medium weight (500). The
+# static sources (SIL OFL 1.1) are committed under builtinFonts/source/EBGaramond.
+#
+# Build: python3 lib/EpdFont/scripts/build-sd-fonts.py --config lib/EpdFont/scripts/sd-fonts-fork.yaml --output-dir dist/sd-fonts
+
+families:
+  - name: EB Garamond
+    description: "Classic old-style Garamond serif"
+    languages: "Latin, Greek, Cyrillic"
+    intervals: latin-ext,greek,cyrillic
+    sizes: [8, 9, 10, 12, 14, 16, 18, 20]
+    styles:
+      regular: { path: "builtinFonts/source/EBGaramond/EBGaramond-Medium.ttf" }
+      bold: { path: "builtinFonts/source/EBGaramond/EBGaramond-Bold.ttf" }
+      italic: { path: "builtinFonts/source/EBGaramond/EBGaramond-MediumItalic.ttf" }
+      bolditalic: { path: "builtinFonts/source/EBGaramond/EBGaramond-BoldItalic.ttf" }

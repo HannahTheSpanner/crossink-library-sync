@@ -7,6 +7,8 @@ name: Build firmware
 #   x4-pro     -> Xteink X4 Pro (X4P)
 #   sticky     -> Seeed reTerminal Sticky
 #   picco      -> BOOX Picco (app-slot image; see docs/picco.md)
+# plus the EB Garamond SD font pack for the X3/X4, whose firmware has no room
+# for it as a built-in font.
 
 on:
   push:
@@ -138,15 +140,52 @@ jobs:
           path: .pio/build/${{ matrix.environment }}/${{ matrix.firmware }}.bin
           if-no-files-found: error
 
+  sd-font:
+    name: SD font (EB Garamond for X3/X4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      # Same toolchain as upstream's release-fonts workflow.
+      - name: Install font tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfreetype6-dev
+          pip install freetype-py fonttools pyyaml
+
+      - name: Build .cpfont pack
+        run: |
+          python3 lib/EpdFont/scripts/build-sd-fonts.py --config lib/EpdFont/scripts/sd-fonts-fork.yaml \
+            --output-dir dist/sd-fonts --clean --verbose -j 1
+          mkdir -p dist/release
+          cp "dist/sd-fonts/EB Garamond.zip" dist/release/EB-Garamond-SD-font.zip
+          unzip -l dist/release/EB-Garamond-SD-font.zip
+
+      - name: Upload SD font
+        uses: actions/upload-artifact@v7
+        with:
+          name: sd-font-eb-garamond
+          path: dist/release/EB-Garamond-SD-font.zip
+          if-no-files-found: error
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [host-tests, firmware]
+    needs: [host-tests, firmware, sd-font]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
         with:
           pattern: firmware-*
+          merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: sd-font-*
           merge-multiple: true
           path: dist
 
@@ -157,5 +196,7 @@ jobs:
       # publishing there also fires a tag push.
       - uses: softprops/action-gh-release@v3
         with:
-          files: dist/*.bin
+          files: |
+            dist/*.bin
+            dist/*.zip
           generate_release_notes: ${{ github.event_name != 'release' }}

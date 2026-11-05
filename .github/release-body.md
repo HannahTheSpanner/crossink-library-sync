@@ -10,6 +10,8 @@ CrossInk with **OPDS library sync**: download every book in an OPDS catalog that
 | Seeed reTerminal Sticky | `firmware-sticky.bin` |
 | BOOX Picco | `firmware-picco.bin` |
 
+`EB-Garamond-SD-font.zip` is the EB Garamond reader font for the X3 and X4, which have no room for it built in. Unzip it and copy the `EB Garamond` folder to `/.fonts/` on the SD card. The other devices already have it built in.
+
 ## Install
 
 **Xteink and Sticky**
