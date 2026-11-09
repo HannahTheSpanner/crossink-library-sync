@@ -1,0 +1,6 @@
+# Crash symbolisation request, read by .github/workflows/symbolize.yml on a
+# push to a debug/** branch (or run the workflow by hand with its inputs).
+# First non-comment line: the PlatformIO environment. Remaining lines: the
+# crash report's backtrace addresses, one or more per line. Branch from the
+# released tag so the rebuilt ELF matches the one on the device.
+x4-pro

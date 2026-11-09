@@ -108,6 +108,10 @@ CrossPoint builds for these two ESP32-S3 readers; CrossInk does not. The hardwar
 
 Both get a `-full.bin` image in each release for a first install with esptool, since no browser installer lists them. The SDK marks both boards' hardware validation as incomplete, and this fork has not been run on either device, so treat them as test builds. See [docs/metalio-eink4.md](./docs/metalio-eink4.md) and [docs/eego-a4.md](./docs/eego-a4.md).
 
+### Reading a crash report
+
+After a crash the reader writes `crash_report.txt` to the SD card root with a raw backtrace. To turn it into function names and line numbers, create a branch named `debug/<anything>` from the **released tag** the device was running, put the environment and the addresses in `.github/symbolize/request.txt`, and push. The `Symbolize crash` workflow rebuilds that commit and prints the symbolised trace in its run summary. (Or run the workflow by hand from the Actions tab with the environment and addresses as inputs.) The summary also prints the ELF SHA-256; its first digits should match the report's "Firmware ELF SHA256" line. Frames inside Espressif's prebuilt libraries (lwIP, Wi-Fi) have no symbols and show as the nearest fork function, so read those from the "Panic reason" line instead.
+
 ## Credit: Library Sync for KOReader
 
 This feature would not be possible without the fantastic [Library Sync for KOReader](https://github.com/komadorirobin/library-sync.koplugin) by Robin Bolinsson ([komadorirobin](https://github.com/komadorirobin)), released under the MIT licence. The sync feature is a port of its "Sync missing books" flow, and all credit for the idea and the workflow goes to that project. If you use KOReader, it is the plugin to use, and it does far more than this port.
