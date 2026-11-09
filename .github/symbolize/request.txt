@@ -1,0 +1,8 @@
+# Crash symbolisation request, read by .github/workflows/symbolize.yml on a
+# push to a debug/** branch. First non-comment line: the PlatformIO
+# environment. Remaining lines: backtrace addresses, one or more per line.
+x4-pro
+0x4037DC75 0x40375773 0x4037DC3D 0x40384D26 0x422AEEED 0x422A7362 0x422A73BE 0x422A77CF
+0x422A826D 0x42011FF2 0x4203BD0E 0x4203C131 0x420EF2C5 0x420EF375 0x420EF7A8 0x420EFE09
+0x422059C8 0x42205B86 0x42205C8A 0x4212CF66 0x4224C855 0x42293580 0x4037EBCD
+0x4037DC78 0x80375776
