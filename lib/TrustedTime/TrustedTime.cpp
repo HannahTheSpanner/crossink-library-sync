@@ -7,6 +7,7 @@
 #include <Logging.h>
 #ifndef SIMULATOR
 #include <Preferences.h>
+#include <WiFi.h>  // Network.hostByName
 // Suppress ESP-IDF's legacy inline aliases so the core-locked handoff below
 // can call the raw, synchronous lwIP sntp_stop rather than its queued wrapper.
 #define ESP_NETIF_COMPONENT_BUILD
@@ -47,6 +48,7 @@ constexpr int64_t MIN_ADVANCE_SECS = 60;
 
 constexpr const char* PREFS_NAMESPACE = "cptime";
 constexpr const char* PREFS_KEY = "floor";
+constexpr const char* NTP_SERVER = "pool.ntp.org";
 
 // Latest time this boot has seen (or restored from NVS). trustedNow() never
 // reports earlier, so a backward clock step (a bad SNTP answer, a manual set)
@@ -115,9 +117,30 @@ void configureSntp() {
   char timezone[64];
   snprintf(timezone, sizeof(timezone), "%s", currentTz ? currentTz : "UTC0");
 #ifndef SIMULATOR
-  configTzTime(timezone, "pool.ntp.org");
+  configTzTime(timezone, NTP_SERVER);
 #endif
 }
+
+#ifndef SIMULATOR
+// Arduino's Network.hostByName() calls lwIP's dns_clear_cache() from the
+// calling task the first time it runs after the interface gained or lost an
+// address. Clearing the table fails every lookup still in flight, running
+// its callback right there; SNTP's callback cancels a timeout, which lwIP
+// asserts may only happen from its own thread ("Required to lock TCPIP core
+// functionality!"). So a hostname lookup made right after Wi-Fi comes up,
+// while SNTP is still resolving its server, panics the device (seen on the
+// X4 Pro signing in to a KOReader sync server).
+//
+// Take that one-off cache clear here, before SNTP has anything in flight,
+// and leave the server in the cache so SNTP's own lookup never goes to the
+// network: the next lookup from any task then finds nothing to clear.
+void warmNtpDns() {
+  IPAddress resolved;
+  if (Network.hostByName(NTP_SERVER, resolved) != 1) {
+    LOG_INF("TIME", "NTP server lookup failed; SNTP will retry on its own");
+  }
+}
+#endif
 
 }  // namespace
 
@@ -173,7 +196,16 @@ void adopt(const int64_t epoch) {
 void startSync() {
   std::lock_guard<std::mutex> lock(syncLock);
   sntp_set_time_sync_notification_cb(&onTimeSynced);
+#ifndef SIMULATOR
+  // A client left running from an earlier connection may be mid-lookup; stop
+  // it under the lwIP lock before the DNS cache is touched, then restart it
+  // below so the new connection gets a fresh sync.
+  const esp_err_t stopResult = esp_netif_tcpip_exec(stopBackgroundSntp, nullptr);
+  if (stopResult != ESP_OK) LOG_ERR("TIME", "Failed to stop background NTP: %s", esp_err_to_name(stopResult));
+  warmNtpDns();
+#else
   if (esp_sntp_enabled()) return;  // running; the sync callback handles the rest
+#endif
   configureSntp();
 }
 
@@ -187,7 +219,7 @@ bool syncNow(const uint32_t timeoutMs) {
     LOG_ERR("TIME", "Failed to stop background NTP: %s", esp_err_to_name(stopResult));
     return false;
   }
-  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(NTP_SERVER);
   config.sync_cb = &onTimeSynced;
   const esp_err_t initResult = esp_netif_sntp_init(&config);
   if (initResult != ESP_OK) {
