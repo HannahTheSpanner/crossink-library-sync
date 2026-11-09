@@ -37,7 +37,9 @@ void adopt(int64_t epoch);
 void note();
 
 // Kick off a non-blocking SNTP sync; the sync callback persists the floor.
-// Call whenever a Wi-Fi station connection comes up. No-op while running.
+// Call whenever a Wi-Fi station connection comes up. Restarts a running
+// client, after one blocking lookup of the NTP server that also absorbs
+// Arduino's post-connect DNS cache clear (see warmNtpDns in the .cpp).
 void startSync();
 
 // Blocking SNTP sync with a deadline, for callers that need the wall clock

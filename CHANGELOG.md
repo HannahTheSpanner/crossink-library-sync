@@ -1,3 +1,13 @@
+## [v2.0.0-library-sync.3] - 2026-11-09
+
+### Fixed
+
+- Signing in to a KOReader sync server (or any other connection made right after Wi-Fi came up) could crash the reader with `assert failed: sys_untimeout ... Required to lock TCPIP core functionality!`. Arduino clears lwIP's DNS cache from the calling task on the first lookup after connecting, which ran the still-pending SNTP lookup's callback where lwIP forbids it. The time sync now resolves its server itself before starting, so nothing is in flight when that clear happens. Seen on the X4 Pro; the code is shared with upstream CrossInk v2.0.0.
+
+### Internal
+
+- A `Symbolize crash` workflow turns a `crash_report.txt` backtrace into function names and line numbers (see the README).
+
 ## [v2.0.0-library-sync.2] - 2026-11-06
 
 Refinements from a review of the fork's own code. No new features.

@@ -1,0 +1,103 @@
+# Symbolise a device crash report's backtrace against a fresh build of the
+# same commit. Push the tag's commit plus .github/symbolize/request.txt to a
+# debug/** branch, or run it by hand with the environment and addresses. The
+# result is in the job log and the run summary; the ELF SHA-256 is printed so
+# it can be checked against the "Firmware ELF SHA256" line of the report.
+name: Symbolize crash
+
+on:
+  push:
+    branches: ["debug/**"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: PlatformIO environment (x4-pro, default, ...)
+        required: true
+        default: x4-pro
+      addresses:
+        description: Backtrace addresses, space separated
+        required: true
+
+jobs:
+  symbolize:
+    name: Symbolize (${{ inputs.environment || 'request.txt' }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Read the request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.environment }}" ]; then
+            env_name="${{ inputs.environment }}"
+            addresses="${{ inputs.addresses }}"
+          else
+            mapfile -t lines < <(grep -v '^#' .github/symbolize/request.txt | sed '/^\s*$/d')
+            env_name="${lines[0]}"
+            addresses="${lines[*]:1}"
+          fi
+          echo "environment=$env_name" >> "$GITHUB_OUTPUT"
+          echo "addresses=$addresses" >> "$GITHUB_OUTPUT"
+          echo "Environment: $env_name"
+          echo "Addresses: $addresses"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: ${{ runner.os }}-platformio-py3.14-core6.1.19-${{ steps.request.outputs.environment }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO Core
+        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+
+      - name: Pin pioarduino core inside the platform penv
+        shell: bash
+        run: |
+          set -euo pipefail
+          pio pkg install -e "${{ steps.request.outputs.environment }}"
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
+
+      - name: Build
+        shell: bash
+        run: pio run -j1 -e "${{ steps.request.outputs.environment }}" > build.log 2>&1 || { tail -50 build.log; exit 1; }
+
+      - name: Symbolize
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_name="${{ steps.request.outputs.environment }}"
+          elf=".pio/build/$env_name/firmware.elf"
+          addr2line=$(ls ~/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-addr2line \
+                        ~/.platformio/packages/toolchain-*/bin/*-addr2line 2>/dev/null | head -1)
+          case "$env_name" in
+            default) addr2line=$(ls ~/.platformio/packages/toolchain-riscv32-esp*/bin/riscv32-esp-elf-addr2line | head -1) ;;
+          esac
+          {
+            echo "## Symbolized backtrace ($env_name)"
+            echo
+            echo "ELF SHA-256: $(sha256sum "$elf" | cut -c1-64)"
+            echo
+            echo '```'
+            for a in ${{ steps.request.outputs.addresses }}; do
+              # Xtensa return addresses carry a window bit in the top nibble.
+              case "$a" in 0x8*|0X8*) a=$(printf '0x4%s' "${a:3}") ;; esac
+              "$addr2line" -pfiaC -e "$elf" "$a"
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
