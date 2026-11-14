@@ -232,8 +232,35 @@ jobs:
       # Passing a body here would overwrite notes written in the UI, because
       # publishing there also fires a tag push.
       - uses: softprops/action-gh-release@v3
+        if: ${{ !contains(github.ref_name, '-picco') }}
         with:
           files: |
             dist/*.bin
             dist/*.zip
           generate_release_notes: ${{ github.event_name != 'release' }}
+
+      # A Picco-only release is a test build: always a pre-release and never
+      # "Latest", which stays with the release for every device. For a tag
+      # pushed with git, the notes come from .github/release-notes/<tag>.md
+      # when that file exists.
+      - uses: actions/checkout@v6
+        if: contains(github.ref_name, '-picco')
+        with:
+          path: repo
+          sparse-checkout: .github/release-notes
+
+      - name: Find the notes for a pushed Picco tag
+        id: picco-notes
+        if: contains(github.ref_name, '-picco') && github.event_name != 'release'
+        run: |
+          notes="repo/.github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then echo "path=$notes" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: softprops/action-gh-release@v3
+        if: contains(github.ref_name, '-picco')
+        with:
+          files: dist/firmware-picco.bin
+          prerelease: true
+          make_latest: false
+          body_path: ${{ steps.picco-notes.outputs.path }}
+          generate_release_notes: ${{ github.event_name != 'release' && steps.picco-notes.outputs.path == '' }}
