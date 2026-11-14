@@ -173,6 +173,10 @@ add_test(NAME LanguageAssetPublicationRegression
   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/scripts/test_language_asset_publication.py)
 add_test(NAME ReleaseDownloadPreparationRegression
   COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/scripts/test_release_download_preparation.py)
+add_test(NAME SleepChargeOverlayRegression
+  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/scripts/test_sleep_charge_overlay.py)
+add_test(NAME DisplaySdkCompatibilityRegression
+  COMMAND ${Python3_EXECUTABLE} ${REPO_ROOT}/test/scripts/test_display_sdk_compatibility.py)
 
 add_subdirectory(reading_session_journal)
 

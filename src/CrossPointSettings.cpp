@@ -29,6 +29,16 @@
 #include "util/ReaderStatusBarJson.h"
 #include "util/TwoFingerSwipe.h"
 
+bool CrossPointSettings::fadingFixSupported() {
+  const auto board = BoardConfig::ACTIVE.board;
+  if (board == BoardConfig::Board::XteinkX4 || board == BoardConfig::Board::XteinkX3) return true;
+#ifndef SIMULATOR
+  return board == BoardConfig::Board::XteinkX3Uc8279;
+#else
+  return false;
+#endif
+}
+
 void readAndValidate(FsFile& file, uint8_t& member, const uint8_t maxValue) {
   uint8_t tempValue;
   serialization::readPod(file, tempValue);

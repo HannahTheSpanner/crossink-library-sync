@@ -1124,6 +1124,60 @@ void mirrorWakeShortPressToNvs() {
 #endif
 }
 
+#if FREEINK_DEVICE_PICCO
+struct SleepChargeOverlay {
+  HeapByteBuffer frame;
+  Rect strip;
+  bool painted = false;
+
+  static void draw(void* context, uint16_t percent) {
+    auto& overlay = *static_cast<SleepChargeOverlay*>(context);
+    RenderLock lock;
+    memcpy(renderer.getFrameBuffer(), overlay.frame.get(), renderer.getBufferSize());
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    renderer.fillRect(overlay.strip.x, overlay.strip.y, overlay.strip.width, overlay.strip.height, false);
+    char text[24];
+    snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(percent));
+    const int x = overlay.strip.x +
+                  (overlay.strip.width - metrics.batteryWidth - renderer.getTextWidth(SMALL_FONT_ID, text) - 8) / 2;
+    GUI.drawBatteryLeft(renderer, Rect{x, overlay.strip.y + 6, metrics.batteryWidth, metrics.batteryHeight}, percent);
+    // An unsupported driver returns without painting. A whole-screen B/W
+    // fallback could destroy retained grays, so leave that sleep image alone.
+    overlay.painted = renderer.displayRetainedGrayscaleOverlay(overlay.strip.x, overlay.strip.y, overlay.strip.width,
+                                                               overlay.strip.height) ||
+                      overlay.painted;
+    memcpy(renderer.getFrameBuffer(), overlay.frame.get(), renderer.getBufferSize());
+  }
+};
+
+static bool holdSleepWhileUsbPowered() {
+  if (!gpio.isUsbConnected()) return false;
+  // One runtime-sized snapshot in PSRAM, only during USB sleep. It restores
+  // the draw buffer after each strip; it is never needed on constrained C3s.
+  int top, right, bottom, left;
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  const int height =
+      std::max(renderer.getLineHeight(SMALL_FONT_ID), UITheme::getInstance().getMetrics().batteryHeight) + 16;
+  SleepChargeOverlay overlay{
+      makePsramByteBufferNoThrow(renderer.getBufferSize()),
+      Rect{left, renderer.getScreenHeight() - bottom - height, renderer.getScreenWidth() - left - right, height}};
+  if (!overlay.frame) {
+    LOG_ERR("MAIN", "No PSRAM for sleep charge strip; retaining sleep image");
+    return powerManager.holdWhileUsbPowered(gpio);
+  }
+  memcpy(overlay.frame.get(), renderer.getFrameBuffer(), renderer.getBufferSize());
+  const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, SleepChargeOverlay::draw, &overlay);
+  if (!buttonPressed && overlay.painted) {
+    RenderLock lock;
+    if (!renderer.displayRetainedGrayscaleOverlay(overlay.strip.x, overlay.strip.y, overlay.strip.width,
+                                                  overlay.strip.height, true)) {
+      LOG_ERR("MAIN", "Could not restore retained sleep image after USB hold");
+    }
+  }
+  return buttonPressed;
+}
+#endif
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout) {
 #ifndef SIMULATOR
@@ -1185,7 +1239,7 @@ void enterDeepSleep(bool fromTimeout) {
 #if FREEINK_DEVICE_PICCO
   // The I2C light retains its state through sleep. Keep the saved preference.
   Frontlight.setOn(false);
-  const bool usbWakeRequested = powerManager.holdWhileUsbPowered(gpio);
+  const bool usbWakeRequested = holdSleepWhileUsbPowered();
 #endif
   putTiltSensorToSleepForDeepSleep();
   display.deepSleep();
@@ -1828,7 +1882,7 @@ void loop() {
                          activityManager.isReaderActivity());
   }
 
-  renderer.setFadingFix(SETTINGS.fadingFix);
+  renderer.setFadingFix(SETTINGS.fadingFix && CrossPointSettings::fadingFixSupported());
 
   // ROM logging works even when Arduino Serial reports no connected listener.
   if ((Serial || FREEINK_LOG_TRANSPORT == FREEINK_LOG_TRANSPORT_ROM_PRINTF) && millis() - lastMemPrint >= 10000) {

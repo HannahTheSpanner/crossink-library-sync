@@ -348,7 +348,7 @@ void SettingsActivity::rebuildSettingsLists() {
   const auto allSettings = getSettingsList(needsFonts ? &sdFontSystem.registry() : nullptr, &dictionaryRegistry);
   displaySettings = buildGroupedDisplaySettingsList(allSettings);
 #ifndef SIMULATOR
-  if (BoardConfig::isX4Pro() || CROSSINK_APP_DEVICE_X4CLASSIC) {
+  if (!CrossPointSettings::fadingFixSupported()) {
     displaySettings.erase(
         std::remove_if(displaySettings.begin(), displaySettings.end(),
                        [](const SettingInfo& setting) { return setting.valuePtr == &CrossPointSettings::fadingFix; }),
