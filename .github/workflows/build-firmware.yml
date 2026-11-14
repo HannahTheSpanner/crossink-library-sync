@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   host-tests:
-    name: Host tests (OPDS, TLS, downloads)
+    name: Host tests (OPDS, TLS, downloads, display)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -57,11 +57,23 @@ jobs:
           if [ -d test/http_downloader ]; then targets="$targets HttpDownloaderTest HttpDownloaderDevicePathTest"; fi
           cmake --build build-tests -j4 --target $targets
 
+      # Glyph planes and the reader's grayscale passes, including text
+      # anti-aliasing on absolute image pages.
+      - name: Build display tests
+        run: >
+          cmake --build build-tests -j4 --target GlyphBitmapTest EpubGrayscaleTest EpubTextGrayscaleTest
+          DeferredGrayscaleTest
+
       # "Opds" also selects the OPDS feed recovery harness, which compiles the
       # browser's real fetchFeed()/addSyncRow() against stubs. Upstream's
       # OpdsServerStoreTest does not link at v2.0.0-rc, so it is not built.
       - name: Run OPDS, TLS and download tests
         run: ctest --test-dir build-tests --output-on-failure -R "Opds|TlsRecordReserve|HttpDownloader" -E "OpdsServerStore"
+
+      - name: Run display tests
+        run: >
+          ctest --test-dir build-tests --output-on-failure
+          -R "GlyphBitmap|EpubGrayscale|EpubTextGrayscale|EpubTextRaster|AbsoluteImageRaster|RetainedGrayscaleOverlay|DeferredGrayscale|ReaderRefreshScope|PageTextDetection|SleepChargeOverlay|DisplaySdkCompatibility"
 
   firmware:
     name: Firmware (${{ matrix.device }})
@@ -205,6 +217,14 @@ jobs:
           pattern: sd-font-*
           merge-multiple: true
           path: dist
+
+      # A tag with "-picco" in its name is a Picco-only release: the other
+      # images are still built, as a compile check, but only the Picco's is attached.
+      - name: Keep only the Picco image for a Picco-only release
+        if: contains(github.ref_name, '-picco')
+        run: |
+          find dist -type f ! -name 'firmware-picco.bin' -delete
+          ls -l dist
 
       # Only attaches the images. Notes come from the release itself (written
       # when it is published in the web UI; .github/release-body.md is the
