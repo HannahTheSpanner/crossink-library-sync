@@ -52,7 +52,7 @@ HeapByteBuffer allocateScratch(const int widthBytes, const int height, size_t& s
 
 bool runAbsoluteImageGrayscalePass(GfxRenderer& renderer, const Page& page, const int fontId, const int marginLeft,
                                    const int marginTop, uint8_t* lsb, uint8_t* msb, const size_t planeSize,
-                                   void (*renderOverlays)(void*), void* context) {
+                                   void (*renderOverlays)(void*), void* context, const bool textGrayscale) {
   const int height = renderer.getDisplayHeight();
   const size_t bytes = static_cast<size_t>(renderer.getDisplayWidthBytes()) * height;
   if (!renderer.grayPlanesAreAbsolute() || !lsb || !msb || planeSize < bytes) {
@@ -66,6 +66,13 @@ bool runAbsoluteImageGrayscalePass(GfxRenderer& renderer, const Page& page, cons
     memcpy(plane, renderer.getFrameBuffer(), bytes);
     renderer.setRenderMode(mode);
     renderer.beginStripTarget(plane, 0, height);
+    if (textGrayscale) {
+      // The seeded page has every glyph pixel black. Give the text its gray
+      // edges here; images and overlays are drawn over it as before.
+      renderer.setAbsoluteTextAntiAliasing(true);
+      page.renderText(renderer, fontId, marginLeft, marginTop, true);
+      renderer.setAbsoluteTextAntiAliasing(false);
+    }
     page.renderImages(renderer, fontId, marginLeft, marginTop);
     // Feedback or clipping highlights may overlap the image itself.
     if (renderOverlays) renderOverlays(context);

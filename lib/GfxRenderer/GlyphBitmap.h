@@ -9,7 +9,7 @@
 namespace glyphBitmap {
 
 // Framebuffer plane a glyph is painted into.
-enum class Plane : uint8_t { BW, GrayLSB, GrayMSB };
+enum class Plane : uint8_t { BW, GrayLSB, GrayMSB, AbsoluteLSB, AbsoluteMSB };
 
 // Position of glyph pixel (0, 0) plus the step for one move along the glyph's
 // x and y axes, all in one coordinate space. The axes must describe an
@@ -70,11 +70,13 @@ __attribute__((always_inline)) inline void clipToRect(const Frame& frame, int le
 }
 
 // Keep pixel writes inline when decoding a group of four pixels.
-__attribute__((always_inline)) inline void paint(uint8_t* buffer, int destination, uint8_t ink, uint8_t levels,
-                                                 bool clearBits) {
-  if ((levels & (1u << ink)) == 0) return;
+// Bit n of clearLevels or setLevels set means source value n clears or sets its bit.
+__attribute__((always_inline)) inline void paint(uint8_t* buffer, int destination, uint8_t ink, uint8_t clearLevels,
+                                                 uint8_t setLevels) {
+  const uint8_t level = static_cast<uint8_t>(1u << ink);
+  if (((clearLevels | setLevels) & level) == 0) return;
   const uint8_t mask = 0x80u >> (destination & 7);
-  if (clearBits)
+  if (clearLevels & level)
     buffer[destination >> 3] &= static_cast<uint8_t>(~mask);
   else
     buffer[destination >> 3] |= mask;
@@ -89,16 +91,37 @@ __attribute__((always_inline)) inline void paint(uint8_t* buffer, int destinatio
 //   honours state (true clears the bit, i.e. black). The gray planes only ever
 //   set bits, because there 0 means leave alone and 1 means update: MSB paints
 //   both grays, LSB paints dark gray only. 1bpp glyphs paint ink with state on
-//   every plane.
+//   every plane. The absolute planes hold each pixel's final shade (LSB, MSB:
+//   black=00, dark=10, light=01, white=11), so every ink value writes its exact
+//   bit, whether the plane starts white or as a copy of the B/W page.
 // Clipping happens before pixel decoding, so fully hidden glyphs cost nothing.
 inline void draw(const uint8_t* bitmap, int width, int height, bool twoBit, Plane plane, bool state,
                  const Target& target, Clip clip) {
-  // Bit n of levels set means source value n is painted.
-  uint8_t levels = 0x02;
-  bool clearBits = state;
+  uint8_t clearLevels = state ? 0x02 : 0x00;
+  uint8_t setLevels = state ? 0x00 : 0x02;
   if (twoBit) {
-    levels = plane == Plane::BW ? 0x0e : plane == Plane::GrayMSB ? 0x06 : 0x04;
-    if (plane != Plane::BW) clearBits = false;
+    switch (plane) {
+      case Plane::BW:
+        clearLevels = state ? 0x0e : 0x00;
+        setLevels = state ? 0x00 : 0x0e;
+        break;
+      case Plane::GrayMSB:
+        clearLevels = 0x00;
+        setLevels = 0x06;
+        break;
+      case Plane::GrayLSB:
+        clearLevels = 0x00;
+        setLevels = 0x04;
+        break;
+      case Plane::AbsoluteMSB:
+        clearLevels = 0x0c;
+        setLevels = 0x02;
+        break;
+      case Plane::AbsoluteLSB:
+        clearLevels = 0x0a;
+        setLevels = 0x04;
+        break;
+    }
   }
 
   // Intersect with the glyph bounds, then with the panel width and the
@@ -125,17 +148,17 @@ inline void draw(const uint8_t* bitmap, int width, int height, bool twoBit, Plan
     if (twoBit) {
       // Rows are bit-contiguous, not byte-padded. Align after any clipped prefix.
       while (remaining && (source & 3)) {
-        paint(target.buffer, destination, (bitmap[source >> 2] >> (6 - (source & 3) * 2)) & 3, levels, clearBits);
+        paint(target.buffer, destination, (bitmap[source >> 2] >> (6 - (source & 3) * 2)) & 3, clearLevels, setLevels);
         ++source;
         destination += stepX;
         --remaining;
       }
       while (remaining >= 4) {
         const uint8_t packed = bitmap[source >> 2];
-        paint(target.buffer, destination, packed >> 6, levels, clearBits);
-        paint(target.buffer, destination + stepX, (packed >> 4) & 3, levels, clearBits);
-        paint(target.buffer, destination + 2 * stepX, (packed >> 2) & 3, levels, clearBits);
-        paint(target.buffer, destination + 3 * stepX, packed & 3, levels, clearBits);
+        paint(target.buffer, destination, packed >> 6, clearLevels, setLevels);
+        paint(target.buffer, destination + stepX, (packed >> 4) & 3, clearLevels, setLevels);
+        paint(target.buffer, destination + 2 * stepX, (packed >> 2) & 3, clearLevels, setLevels);
+        paint(target.buffer, destination + 3 * stepX, packed & 3, clearLevels, setLevels);
         source += 4;
         destination += 4 * stepX;
         remaining -= 4;
@@ -145,7 +168,7 @@ inline void draw(const uint8_t* bitmap, int width, int height, bool twoBit, Plan
     while (remaining--) {
       const uint8_t ink = twoBit ? ((bitmap[source >> 2] >> (6 - (source & 3) * 2)) & 3)
                                  : ((bitmap[source >> 3] >> (7 - (source & 7))) & 1);
-      paint(target.buffer, destination, ink, levels, clearBits);
+      paint(target.buffer, destination, ink, clearLevels, setLevels);
       ++source;
       destination += stepX;
     }

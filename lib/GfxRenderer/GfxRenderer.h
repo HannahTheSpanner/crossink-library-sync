@@ -56,6 +56,7 @@ class GfxRenderer {
   HalDisplay& display;
   RenderMode renderMode;
   mutable bool absoluteGrayPlanes = false;
+  bool absoluteTextAa = false;
   Orientation orientation;
   bool fadingFix;
   uint8_t* frameBuffer = nullptr;
@@ -380,6 +381,9 @@ class GfxRenderer {
   // Grayscale functions
   void setRenderMode(RenderMode mode);
   bool grayPlanesAreAbsolute() const { return absoluteGrayPlanes; }
+  // Write the gray edges of black text into absolute planes instead of drawing them black.
+  void setAbsoluteTextAntiAliasing(bool enabled) { absoluteTextAa = enabled; }
+  bool absoluteTextAntiAliasing() const { return absoluteTextAa; }
   bool supportsAbsoluteGrayscale() const;
   bool displayAbsoluteGrayscaleBase(HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH) const;
   // Direct grayscale folds the B/W base into the grayscale pass

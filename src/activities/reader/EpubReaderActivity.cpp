@@ -7811,7 +7811,7 @@ bool EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
               renderer, *page, fontId, orientedMarginLeft, orientedMarginTop, deferredGrayscalePlanes.lsb.get(),
               deferredGrayscalePlanes.msb.get(), deferredGrayscalePlanes.bytes,
               [](void* context) { (*static_cast<const decltype(renderImageOverlays)*>(context))(); },
-              &renderImageOverlays)) {
+              &renderImageOverlays, needsTextGrayscale)) {
         cleanImageBasePending = false;
         pagesUntilFullRefresh = 1;
         return true;

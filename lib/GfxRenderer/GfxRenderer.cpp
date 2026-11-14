@@ -836,7 +836,6 @@ template <TextRotation rotation = TextRotation::None>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                            const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                            const bool pixelState, const EpdFontFamily::Style style) {
-  if (renderer.grayPlanesAreAbsolute()) renderMode = GfxRenderer::BW;
   const auto glyphData = fontFamily.getGlyphData(cp, style);
   const EpdGlyph* glyph = glyphData.glyph;
   const EpdFontData* fontData = glyphData.fontData;
@@ -846,6 +845,9 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   }
 
   const bool is2Bit = fontData->is2Bit;
+  // Absolute planes take glyphs as B/W unless the caller asked for the gray edges of black text.
+  if (renderer.grayPlanesAreAbsolute() && !(renderer.absoluteTextAntiAliasing() && is2Bit && pixelState))
+    renderMode = GfxRenderer::BW;
   const uint8_t width = glyph->width;
   const uint8_t height = glyph->height;
   const int left = glyph->left;
@@ -912,9 +914,12 @@ void GfxRenderer::drawGlyphBitmap(const uint8_t* bitmap, const int width, const 
   physical.dyX = nextX - physical.x;
   physical.dyY = nextY - physical.y;
 
-  const glyphBitmap::Plane plane = mode == BW              ? glyphBitmap::Plane::BW
-                                   : mode == GRAYSCALE_MSB ? glyphBitmap::Plane::GrayMSB
-                                                           : glyphBitmap::Plane::GrayLSB;
+  // renderCharImpl() keeps a gray mode on absolute planes only for anti-aliased black text.
+  const bool msb = mode == GRAYSCALE_MSB;
+  const glyphBitmap::Plane plane =
+      mode == BW           ? glyphBitmap::Plane::BW
+      : absoluteGrayPlanes ? (msb ? glyphBitmap::Plane::AbsoluteMSB : glyphBitmap::Plane::AbsoluteLSB)
+                           : (msb ? glyphBitmap::Plane::GrayMSB : glyphBitmap::Plane::GrayLSB);
   glyphBitmap::draw(bitmap, width, height, twoBit, plane, state, target, clip);
 }
 

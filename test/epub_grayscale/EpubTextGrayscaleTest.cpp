@@ -310,6 +310,67 @@ TEST(AbsoluteImageRaster, TextMatchesBlackWhiteInBothPlanesAndCancellationResets
   EXPECT_FALSE(renderer.grayPlanesAreAbsolute());
 }
 
+// Image pages seed both absolute planes with the B/W page and then redraw the
+// text with anti-aliasing on. Each glyph pixel must end at the shade the overlay
+// masks give it on a text page: (LSB, MSB) black=00, dark=10, light=01, white=11.
+TEST(AbsoluteImageRaster, AntiAliasedTextKeepsItsGrayEdgesOverTheSeededPage) {
+  fakeheap::reset(true);
+  Storage.reset();
+  RasterFont fixture(12);
+  HalDisplay display;
+  GfxRenderer renderer(display);
+  renderer.begin();
+  renderer.insertFont(1, EpdFontFamily(&fixture.font));
+  // Separate glyphs: where glyphs overlap, the last one drawn decides the shade.
+  const auto drawPage = [&renderer](bool black) {
+    for (int i = 0; i < 4; ++i) renderer.drawText(1, 25 + i * 40, 40 + i * 30, "A", black);
+  };
+  for (int orientation = 0; orientation < 4; ++orientation) {
+    SCOPED_TRACE(orientation);
+    renderer.setOrientation(GfxRenderer::Orientation(orientation));
+    std::array<std::vector<uint8_t>, 2> masks;
+    for (int plane = 0; plane < 2; ++plane) {
+      renderer.clearScreen(0x00);
+      renderer.setRenderMode(plane ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
+      drawPage(true);
+      masks[plane] = display.bw;
+    }
+    renderer.setRenderMode(GfxRenderer::BW);
+    renderer.clearScreen();
+    drawPage(true);
+    const auto page = display.bw;
+    bool sawDark = false, sawLight = false;
+    ASSERT_TRUE(renderer.displayAbsoluteGrayscaleBase());
+    renderer.setAbsoluteTextAntiAliasing(true);
+    for (int plane = 0; plane < 2; ++plane) {
+      display.bw = page;
+      renderer.setRenderMode(plane ? GfxRenderer::GRAYSCALE_MSB : GfxRenderer::GRAYSCALE_LSB);
+      drawPage(true);
+      auto expected = page;
+      for (size_t i = 0; i < expected.size(); ++i) {
+        const uint8_t dark = masks[0][i], light = masks[1][i] & static_cast<uint8_t>(~masks[0][i]);
+        sawDark |= dark != 0;
+        sawLight |= light != 0;
+        expected[i] |= plane ? light : dark;
+      }
+      EXPECT_EQ(display.bw, expected);
+      // White text has no gray edges to keep: it is drawn as in the B/W pass.
+      display.bw = page;
+      renderer.setAbsoluteTextAntiAliasing(false);
+      drawPage(false);
+      const auto white = display.bw;
+      display.bw = page;
+      renderer.setAbsoluteTextAntiAliasing(true);
+      drawPage(false);
+      EXPECT_EQ(display.bw, white);
+      EXPECT_NE(white, page);
+    }
+    EXPECT_TRUE(sawDark && sawLight);
+    renderer.setAbsoluteTextAntiAliasing(false);
+    renderer.setRenderMode(GfxRenderer::BW);
+  }
+}
+
 TEST(AbsoluteImageRaster, BitmapPlanesPreserveFourTonesAndWhiteMargins) {
   fakeheap::reset(true);
   Storage.reset();

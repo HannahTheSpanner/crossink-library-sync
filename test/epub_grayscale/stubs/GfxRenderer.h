@@ -45,6 +45,8 @@ class GfxRenderer {
     mode = m;
   }
   bool grayPlanesAreAbsolute() const { return absolute; }
+  bool absoluteTextAa = false;
+  void setAbsoluteTextAntiAliasing(bool enabled) { absoluteTextAa = enabled; }
   uint8_t* getFrameBuffer() { return bw.data(); }
   bool supportsStripGrayscale() const { return supported && !inverted; }
   bool isStripTargetActive() const { return active; }

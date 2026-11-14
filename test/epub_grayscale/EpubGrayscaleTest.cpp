@@ -550,4 +550,29 @@ TEST_F(EpubGrayscaleTest, AbsoluteFeedbackIsDrawnAfterImagesInBothPlanes) {
   EXPECT_EQ(r.bw, base);
   EXPECT_EQ(r.events, (std::vector<std::string>{"copy", "gray", "cleanup"}));
 }
+
+TEST_F(EpubGrayscaleTest, AbsoluteTextAntiAliasingRendersTextBeforeImagesAndOverlaysOnly) {
+  GfxRenderer r(32, 32);
+  r.absolute = true;
+  Page page;
+  struct Overlay {
+    GfxRenderer* renderer;
+    Page* page;
+  } overlay{&r, &page};
+  std::vector<uint8_t> low(r.bw.size()), high(r.bw.size());
+  ASSERT_TRUE(EpubGrayscale::runAbsoluteImageGrayscalePass(
+      r, page, 1, 0, 0, low.data(), high.data(), low.size(),
+      [](void* context) {
+        // Status bars and feedback drawn here stay B/W: the text was rendered
+        // before the images, and its anti-aliasing is switched off again.
+        auto& overlay = *static_cast<Overlay*>(context);
+        EXPECT_FALSE(overlay.renderer->absoluteTextAa);
+        EXPECT_EQ(overlay.page->allVisits, overlay.page->imageVisits);
+      },
+      &overlay, true));
+  EXPECT_EQ(page.allVisits, 2);
+  EXPECT_EQ(page.antiAliasedTextVisits, 2);
+  EXPECT_EQ(page.imageVisits, 2);
+  EXPECT_FALSE(r.absoluteTextAa);
+}
 }  // namespace

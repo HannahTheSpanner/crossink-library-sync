@@ -66,7 +66,12 @@ void compare(int orientation, int rotation, bool twoBit, Plane plane, bool state
         if (plane == Plane::BW) draw = value < 3;
         if (plane == Plane::GrayLSB) draw = value == 1;
         if (plane == Plane::GrayMSB) draw = value == 1 || value == 2;
-        if (plane != Plane::BW) black = false;
+        if (plane == Plane::GrayLSB || plane == Plane::GrayMSB) black = false;
+        // Absolute planes: each ink value writes its own bit (LSB, MSB: black=00, dark=10, light=01).
+        if (plane == Plane::AbsoluteLSB || plane == Plane::AbsoluteMSB) {
+          draw = value < 3;
+          black = value == 0 || value == (plane == Plane::AbsoluteLSB ? 2 : 1);
+        }
       } else {
         draw = (bitmap[source / 8] >> (7 - source % 8)) & 1;
       }
@@ -96,7 +101,7 @@ TEST(GlyphBitmap, MatchesPerPixelReferenceAcrossOrientationsRotationsPlanesAndCl
   for (int orientation = 0; orientation < 4; ++orientation) {
     for (int rotation = 0; rotation < 2; ++rotation) {
       for (bool twoBit : {false, true}) {
-        for (Plane plane : {Plane::BW, Plane::GrayLSB, Plane::GrayMSB}) {
+        for (Plane plane : {Plane::BW, Plane::GrayLSB, Plane::GrayMSB, Plane::AbsoluteLSB, Plane::AbsoluteMSB}) {
           for (bool state : {false, true}) {
             for (int width : {1, 3, 7, 16, 31}) {
               for (const auto [x, y] : {std::pair{-5, -3}, std::pair{0, 0}, std::pair{9, 11}, std::pair{29, 31}}) {
@@ -122,5 +127,22 @@ TEST(GlyphBitmap, EmptyAndFullyClippedGlyphsDoNotWrite) {
       compare(orientation, rotation, true, Plane::BW, true, 11, 9, 100, 100, 0, 32, {0, 0, 40, 32});
       compare(orientation, rotation, true, Plane::BW, true, 11, 9, 0, 0, 0, 32, {12, 10, 15, 20});
     }
+  }
+}
+
+// A glyph leaves each inked pixel at its own shade (LSB, MSB: black=00, dark=10,
+// light=01) whether the plane starts white or as a copy of the B/W page, where
+// every inked pixel is black. White glyph pixels leave the plane alone.
+TEST(GlyphBitmap, AbsolutePlanesEncodeEveryGlyphShade) {
+  const uint8_t glyph = 0b00011011;  // white, light, dark, black
+  for (const uint8_t seed : {uint8_t{0xff}, uint8_t{0x8f}, uint8_t{0x00}}) {
+    uint8_t lsb = seed;
+    uint8_t msb = seed;
+    for (const auto [plane, buffer] : {std::pair{Plane::AbsoluteLSB, &lsb}, std::pair{Plane::AbsoluteMSB, &msb}}) {
+      const glyphBitmap::Target target{buffer, 8, 1, 0, 1, {0, 0, 1, 0, 0, 1}};
+      glyphBitmap::draw(&glyph, 4, 1, true, plane, true, target, {0, 0, 4, 1});
+    }
+    EXPECT_EQ(lsb, static_cast<uint8_t>((seed & 0x8f) | 0x20));
+    EXPECT_EQ(msb, static_cast<uint8_t>((seed & 0x8f) | 0x40));
   }
 }

@@ -17,9 +17,11 @@ HeapByteBuffer allocateScratch(int widthBytes, int height, size_t& size, bool& i
 
 // Complete absolute image planes inherit text, bars and feedback from the BW
 // frame. Caller owns two PSRAM planes and has started an absolute gray pass.
+// textGrayscale also anti-aliases black page text with the planes' two grays.
 bool runAbsoluteImageGrayscalePass(GfxRenderer& renderer, const Page& page, int fontId, int marginLeft, int marginTop,
                                    uint8_t* lsb, uint8_t* msb, size_t planeSize,
-                                   void (*renderOverlays)(void*) = nullptr, void* context = nullptr);
+                                   void (*renderOverlays)(void*) = nullptr, void* context = nullptr,
+                                   bool textGrayscale = false);
 
 // Preserves the live BW buffer and existing controller synchronization. False
 // leaves the caller responsible for its existing BW-snapshot fallback.
