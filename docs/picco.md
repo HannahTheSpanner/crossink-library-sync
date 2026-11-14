@@ -35,9 +35,11 @@ See [Controls](./controls.md) for pinch, rotation, and swipe options.
 
 Sleeping turns the frontlight off. **Settings > Display > Frontlight > Restore
 Light on Wake** controls whether it comes back on when you wake the reader.
-Press Power to wake it. While plugged into USB, the sleep image stays visible,
-with a battery strip along the bottom that is redrawn when the charge level
-changes and removed when the reader is unplugged.
+Press Power to wake it. While plugged into USB, the sleep image stays visible.
+When that image is a four-shade picture, such as a book cover, and the panel
+supports it, a battery strip is drawn along the bottom, redrawn when the charge
+level changes, and removed when the reader is unplugged. Other sleep screens
+are left as they are and show no charging updates.
 
 ## Installation and updates
 

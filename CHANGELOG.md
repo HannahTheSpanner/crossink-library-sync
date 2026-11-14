@@ -5,7 +5,7 @@ A BOOX Picco-only test release, built from the `feat/picco-beta2-display` branch
 ### Added
 
 - Picco: text on a page with a picture is anti-aliased. Such pages are drawn with the panel's four-shade image waveform, where the page's text was plain black and white, so it looked heavier than on other pages (most often seen on the first page of a chapter). The text's soft edges now use the two greys of that same waveform. Image Display (B&W) and Text Anti-Aliasing off behave as before.
-- Picco: a battery strip is drawn over the sleep screen while the reader is asleep on USB power, and removed again when it is unplugged.
+- Picco: while the reader is asleep on USB power, a battery strip is drawn over a sleep screen that shows a four-shade picture (a cover, for example), and removed again when it is unplugged. It needs a panel driver that can repaint part of such a picture (the SSD1677 panels); other sleep screens are left untouched, as before.
 
 ### Changed
 
