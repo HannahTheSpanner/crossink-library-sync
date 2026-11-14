@@ -1,3 +1,23 @@
+## [v2.0.0-library-sync.2-picco.1] - 2026-11-14
+
+A BOOX Picco-only test release, built from the `feat/picco-beta2-display` branch. It is v2.0.0-library-sync.2 plus the Picco display work from CrossPoint's second Picco beta (CrossPoint #4362), taken as CrossInk's own port of it, and one change of this fork's on top. Only `firmware-picco.bin` is attached; the other readers stay on v2.0.0-library-sync.2.
+
+### Added
+
+- Picco: text on a page with a picture is anti-aliased. Such pages are drawn with the panel's four-shade image waveform, where the page's text was plain black and white, so it looked heavier than on other pages (most often seen on the first page of a chapter). The text's soft edges now use the two grays of that same waveform. Image Display (B&W) and Text Anti-Aliasing off behave as before.
+- Picco: a battery strip is drawn over the sleep screen while the reader is asleep on USB power, and removed again when it is unplugged.
+
+### Changed
+
+- The FreeInk SDK moves to the revision CrossInk pins for this display work (`aad0749`). Its Picco display driver is the one in CrossPoint's second Picco beta, which CrossPoint describes as better picture rendering, less ghosting, a better night mode and faster refreshes; it adds a reading waveform for page turns and draws pictures with the panel's four-shade image waveform.
+- Book pages tell the display when they are being shown, so the panel can use its reading waveform, and the first menu drawn over a page erases it cleanly.
+- Sunlight Fading Fix is offered, and applied, only on the Xteink X3 and X4, whose waveforms it compensates.
+
+### Not included
+
+- The other readers' firmware from this branch is not released. The same SDK revision changes their display drivers too (one-pass text anti-aliasing on the X4 Pro and X4 Classic among them), and none of that has been run on hardware here.
+- CrossPoint's change that clears the screen to white before drawing a sleep screen.
+
 ## [v2.0.0-library-sync.2] - 2026-11-06
 
 Refinements from a review of the fork's own code. No new features.
